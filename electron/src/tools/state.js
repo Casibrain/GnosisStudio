@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { app } from "electron";
-import { handle, on } from "../transport/index.js";
+import { handle, senderId } from "../transport/index.js";
 
 
 // path to JSON file with details of last app load
@@ -46,6 +46,17 @@ export function closeFrame(id, view) {
  * @param {object} details Object with details to update - non-present attributes won't be updated
  */
 export function updateFrame(id, details) {
+    // key 不存在时自建。
+    //
+    // Electron 版由 frames.js 在开窗时调 newFrame(win.webContents.id) 预注册；
+    // Tauri/sidecar 下窗口由 Rust 管，业务侧收不到开窗通知，只会在前端调用
+    // updateFrame 时第一次见到这个 key。若不自建，Object.assign(undefined, ...)
+    // 会抛 "Cannot convert undefined or null to object"（已实测），窗口状态全丢。
+    //
+    // 依据 details 里的 files 判断是 builder 还是 runner，与 newFrame 的 view 语义一致。
+    if (!state.frames[id]) {
+        newFrame(id, id)
+    }
     Object.assign(
         state.frames[id],
         details
@@ -68,7 +79,8 @@ export function setProfiles(key, value) {
  * 
  * @returns {object} Object of profiles keyed by set (e.g. "components", "loops", "devices")
  */
-export function getProfiles() {
+export async function getProfiles() {
+    // 异步化（D6）：Tauri 没有同步 invoke，前端 profiles.svelte.js 已改成 await
     return state.profiles
 }
 
@@ -107,10 +119,10 @@ Object.assign(state.profiles, lastState.profiles)
 
 
 export const handlers = {
-    updateFrame: handle("electron.state.updateFrame", (evt, details) => updateFrame(evt.sender.id, details)),
+    updateFrame: handle("electron.state.updateFrame", (evt, details) => updateFrame(senderId(evt), details)),
     setProfiles: handle("electron.state.setProfiles", (evt, key, value) => setProfiles(key, value)),
-    // synchronous so that profiles are available as soon as a window loads
-    getProfiles: on("electron.state.getProfiles", (evt) => { evt.returnValue = getProfiles() }),
+    // 同步 → 异步（D6）：返回 promise，不再写 evt.returnValue
+    getProfiles: handle("electron.state.getProfiles", async () => await getProfiles()),
 }
 
 

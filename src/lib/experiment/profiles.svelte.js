@@ -89,7 +89,7 @@ export async function refresh(key, timeout=undefined, force=false) {
         }, timeout)
     } catch (err) {
         // get last saved profiles
-        let saved = electron?.state.getProfiles()?.[key]
+        let saved = (await electron?.state.getProfiles())?.[key]
         // if there are none, mark as rejected
         if (!saved) {
             pending.reject(err)
@@ -114,7 +114,12 @@ export async function refresh(key, timeout=undefined, force=false) {
 }
 
 // use last received profiles until we receive new ones
-for (let [key, value] of Object.entries(electron?.state.getProfiles() || {})) {
+//
+// 原先这里用同步 IPC（ipcRenderer.sendSync）在模块顶层取值。Tauri 侧没有同步
+// invoke，getProfiles 改成了异步（D6）。顶层 await 在 ESM/SvelteKit 下可用，
+// 且这一步只是读一个本地 JSON 缓存，不阻塞渲染路径上的关键请求。
+const cachedProfiles = ( electron ? await electron.state.getProfiles() : null ) || {}
+for (let [key, value] of Object.entries(cachedProfiles)) {
     if (profiles[key]?.getter && value) {
         profiles[key].value = value
         profiles[key].pending.resolve(profiles[key].value)

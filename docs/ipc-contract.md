@@ -444,6 +444,80 @@ Rust 侧 `JSON.parse` 直接崩：`Unexpected token 'U', "UV\t>> "/Us"...`。
 
 ---
 
+## 7. M5：窗口、菜单、状态持久化
+
+### 7.1 同步通道改异步（D6）
+
+`electron.state.getProfiles` 是**唯一**的同步通道（`ipcRenderer.sendSync` + `evt.returnValue`）。
+Tauri 没有同步 invoke，改异步后影响**两个**前端调用点：
+
+| 位置 | 原写法 | 新写法 |
+|---|---|---|
+| `src/lib/experiment/profiles.svelte.js:92` | `electron?.state.getProfiles()?.[key]` | `(await electron?.state.getProfiles())?.[key]`（已在 async 函数内，直接加 await） |
+| `src/lib/experiment/profiles.svelte.js:117` | 模块顶层同步循环 | 顶层 `const cachedProfiles = await ...`（ESM 支持） |
+
+第 2 处必须改：顶层 await 在 ESM/SvelteKit 下可用，且只读一个本地 JSON，
+不阻塞渲染关键路径。**不要**为此引入 Rust 预注入机制——那比改两行代码复杂得多。
+
+### 7.2 窗口 id：数字 → 字符串（重要）
+
+Electron 用 `webContents.id`（数字，如 `2`）作为 frames 字典 key；
+Tauri 用 label（字符串，如 `"builder"`）。
+
+| 位置 | Electron | Tauri |
+|---|---|---|
+| `state.js` `updateFrame(evt.sender.id)` | 数字 | label |
+| `frames.js` `windows[win.webContents.id]` | 数字 | label |
+| `git.js` `oauthWindows` | 数字 | label |
+
+**实测后果**：直接迁移会 `Cannot convert undefined or null to object`
+（`Object.assign(undefined, details)` 抛错），窗口状态**全部丢失**且不报明显错误。
+
+**修法**：`updateFrame` 在 key 不存在时自动 `newFrame(id, id)`。
+因为窗口由 Rust 管理，业务侧收不到开窗通知，只会在第一次 `updateFrame` 时见到这个 key。
+
+### 7.3 退出落盘
+
+Electron 版依赖 `app.on("before-quit") → saveState()`（`index.cjs:233`）。
+sidecar 没有这个事件，必须自己在退出前落盘，否则**每次重启都丢窗口布局**。
+
+`sidecar.mjs` 的 `shutdown()` 统一处理：`SIGTERM`/`SIGINT`/stdin 结束/uncaughtException 都先 `saveState()`。
+用 `exiting` 标志防重入。
+
+### 7.4 菜单系统
+
+| 项 | Electron | Tauri |
+|---|---|---|
+| 回调机制 | `click: "<id>"` → `win.webContents.send("menu:<id>", true)` | `MenuItem::with_id(id, ...)` → `on_menu_event` → emit `menu:<id>` |
+| 菜单构建 | `Menu.buildFromTemplate` | `tauri::menu::{Menu, Submenu, MenuItem, PredefinedMenuItem}` |
+| macOS | `Menu.setApplicationMenu` | **`app.set_menu`**（`window.set_menu` 在 macOS 明确 Unsupported） |
+| 其他平台 | `win.setMenu` | `win.set_menu` |
+
+前端 `Item.svelte` 的 `getProfile()` 字段基本通用：`label`/`enabled`/`click`/`submenu`/`role`。
+`role` 需映射到 `PredefinedMenuItem`（copy/cut/paste/quit/undo/redo/selectAll/minimize/close/fullscreen）。
+
+### 7.5 capabilities 授权（M5 埋下的坑）
+
+原 `capabilities/default.json` 写死 `windows: ["main"]`。
+`windows_new` 动态创建的窗口（label 为 `builder`/`runner`）**拿不到任何权限**，
+所有 invoke 会被拒且报错在前端控制台，不易发现。
+
+**修法**：`"windows": ["*"]`。
+
+### 7.6 启动自检
+
+`GNOSTIS_SELFCHECK=1` 环境变量触发 `setup()` 里打印所有路径，便于与 Electron 版逐项比对：
+
+```
+[selfcheck] platform        = darwin
+[selfcheck] paths_user      = /Users/huangdp/Library/Application Support/psychopy4
+...
+```
+
+已实测与 Electron 布局一致。
+
+---
+
 ## 8. 迁移检查清单
 
 每个通道迁移时必须确认：

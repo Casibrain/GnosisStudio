@@ -75,15 +75,36 @@ process.stdout.write(JSON.stringify({
     },
 }) + "\n");
 
+// ---------------------------------------------------------------------------
+// 退出路径
+//
+// 原先窗口状态（位置/大小/打开的文件）由 Electron 的 app.on("before-quit")
+// 落盘（index.cjs:233）。sidecar 没有这个事件，必须自己在退出前调 saveState()，
+// 否则用户每次重启都丢窗口布局。
+// ---------------------------------------------------------------------------
+const { saveState } = await import("./tools/state.js");
+
+let exiting = false;
+function shutdown(code = 0) {
+    if (exiting) return;
+    exiting = true;
+    try {
+        saveState();
+    } catch (err) {
+        process.stderr.write(`[sidecar] failed to save state: ${err?.message ?? err}\n`);
+    }
+    process.exit(code);
+}
+
 // 父进程断开 = 退出（防孤儿进程，见风险评估 R3）
-process.stdin.on("end", () => process.exit(0));
-process.on("SIGTERM", () => process.exit(0));
-process.on("SIGINT", () => process.exit(0));
+process.stdin.on("end", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
+process.on("SIGINT", () => shutdown(0));
 
 // 未捕获异常直接上报，不要静默吞掉后变成"IPC 挂起"
 process.on("uncaughtException", err => {
     process.stderr.write(`[sidecar] uncaught: ${err?.stack ?? err}\n`);
-    process.exit(1);
+    shutdown(1);
 });
 process.on("unhandledRejection", err => {
     process.stderr.write(`[sidecar] unhandled rejection: ${err?.stack ?? err}\n`);

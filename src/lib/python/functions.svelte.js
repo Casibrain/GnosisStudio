@@ -13,7 +13,9 @@ import { translate } from "$lib/translation";
  */
 function handleError(err) {
     // get error attribute if there is one
-    if ("error" in err) {
+    // NB: Electron rejects with an object, Tauri rejects with a plain string —
+    // `in` throws on primitives, so only probe when it's actually an object
+    if (err !== null && typeof err === "object" && "error" in err) {
         err = err.error
     }
     // log to console

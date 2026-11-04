@@ -486,3 +486,57 @@ tauri_builder.register_uri_scheme_protocol("psychojs", |ctx, req| {
 ### 9.2 无遗留待确认项
 
 所有阻塞性决策已闭环。后续若出现新分歧，在对应里程碑开工前单独提出。
+
+---
+
+## 10. M0 执行结果（实测，2026-11-04）
+
+M0 在 `demo/GnosisStudio` 中用真实 Tauri 窗口执行，结果由前端回传 Rust 打印到 stdout。
+**注意：不能通过浏览器访问 `devUrl` 验证——`invoke` 只在 Tauri 窗口内存在，浏览器侧必然 `undefined`，那是假失败。**
+
+### 10.1 验证结论
+
+| 用例 | 假设 | 结果 | 说明 |
+|---|---|---|---|
+| T1 | `$state(window.electron)` 后方法仍存在 | ✅ PASS | `typeof electron.files.load === "function"` |
+| T2 | 异步 `invoke` 返回值经 `$state` 深度代理后不被吞 | ✅ PASS | 返回 `"loaded:/tmp/x.psyexp"`，比对一致 |
+| T3 | 嵌套对象可枚举 | ✅ PASS | `Object.keys(electron)` 含 `files` |
+| T4 | 错误能跨 IPC 冒泡到前端 `catch` | ⚠️ **PASS 但暴露缺陷** | reject 值是**裸 string**，非对象 |
+| T5 | 不经 `$state` 直调对照 | ✅ PASS | 与 T2 一致，排除 rune 干扰 |
+
+### 10.2 关键发现：错误语义不兼容（原 R1 被低估）
+
+**实测**：Tauri 的 `Result::Err(String)` reject 出来的是**字符串**。
+
+**后果**：`src/lib/python/functions.svelte.js:16` 的
+```js
+if ("error" in err) { ... }
+```
+在字符串上执行 `in` 运算符会抛 `TypeError: Cannot use 'in' operator to search for 'error' in spike failure`。
+该校验位于 `handleError()` 内，**被 10 个调用点共用**，会让所有错误处理路径二次崩溃——用户看到的是 TypeError，不是真实错误。
+
+**修复**（已实施，仅 1 处）：
+```js
+if (err !== null && typeof err === "object" && "error" in err) {
+    err = err.error
+}
+```
+同步排查其余 17 处 `catch(`：**无其他位置访问 `err.error`**，故无需改动。
+
+**对 M2 的约束**：设计 JSON-RPC 传输层时，若希望保留 Electron 的 `{ error: ... }` 结构以兼容更多调用点，需在桥接层统一包装；但既然前端只有这一处依赖该结构，保持 Tauri 的裸字符串语义更简单。
+
+### 10.3 代码规模结论
+
+**前端改动量修正为约 3 行（原估 50 行）**：`$state` 持有注入对象无需任何适配，只需上述 `handleError` 防御。这**验证了 §4.1 选型的前提成立**——前端 200 处调用点基本零改动。
+
+### 10.4 交付物
+
+| 路径 | 内容 |
+|---|---|
+| `demo/GnosisStudio/` | 脚手架对齐完成：`productName`/`version`/窗口尺寸/文件关联，`pnpm build` 与 `cargo build` 均通过，`tauri dev` 可启动 |
+| `docs/tauri-migration-plan.md` | 本文档 |
+| `src/lib/python/functions.svelte.js` | `handleError` 防御修复 |
+
+### 10.5 下一里程碑入口条件
+
+M1（契约层）可直接开工，无阻塞。M0 遗留的技术判定（`isomorphic-git/http/node` 是否强依赖 Node `http`）顺延至 M6 开工前确认，不影响 M1。

@@ -518,7 +518,85 @@ sidecar 没有这个事件，必须自己在退出前落盘，否则**每次重�
 
 ---
 
-## 8. 迁移检查清单
+## 8. M6：Git / Pavlovia
+
+### 8.1 safeStorage：必须兼容旧密文（D7 修正）
+
+M3 时的 D7 写的是"不兼容旧密文，用 XOR + 本地 key 文件占位"。**这个判断是错的**，M6 实测推翻：
+
+```
+~/Library/Application Support/psychopy4/pavlovia/users.json
+hex: 7631 30 f5c06be9a04336ce30cdf86b89 65e0bc
+     └"v10"┘ └──────── 16 字节 IV ────────┘ └ 0 字节 ┘
+```
+
+这是 Electron safeStorage 真实写下的 **Chromium OSCrypt** 密文，里面是用户的 Pavlovia 登录态。
+换 key 就等于让所有用户的登录失效，且不会有任何提示。
+
+**正确实现**（`electron-shim.js`）：
+
+| 项 | 值 |
+|---|---|
+| 格式 | `"v10"` (3B) + IV (16B) + AES-128-CBC 密文 |
+| 密钥 | macOS Keychain 条目 `"Electron Safe Storage"`，值是 **base64 的 16 字节** |
+| 读取 | `security find-generic-password -s "Electron Safe Storage" -w` |
+| 返回类型 | `encryptString` 返回 **Buffer**（不是 base64 字符串） |
+
+实测四项全通过：
+
+```
+加密后头 v10 / 长度 99 / 往返 PASS
+旧明文兼容 PASS（无 v10 头则原样返回 utf8）
+空明文（只有头+IV）返回 ""
+解密 Electron 真实写下的 users.json → ""（空用户表）✓
+```
+
+**注意返回类型**：`git.js` 把 `encryptString` 的结果直接 `fs.writeFileSync`，
+把 `fs.readFileSync` 的 Buffer 直接喂 `decryptString`。返回 base64 字符串会让
+每次读写都多一层 base64，且和 Electron 写的文件不兼容。
+
+Windows 未移植：Electron 用 DPAPI 保护一个 32 字节密钥存在 `Local State` 的
+`os_crypt.encrypted_key`。这里**明确抛错**而不是降级——
+降级会"能加密但解不开旧数据"，比直接失败更难排查。
+
+### 8.2 OAuth 登录窗口必须放 Rust
+
+`git.js` 的 `login()` 需要三件 Node 做不到的事：
+
+1. `new BrowserWindow(...)` —— 真实窗口
+2. `win.webContents.session.clearStorageData(...)` —— 清 cookie 强制重新登录
+3. `win.webContents.on("did-navigate", ...)` —— 监听回调 URL 拿 `?code=`
+
+已实现 `system::auth_window(url, hostname) -> callback_url`：
+
+- `WebviewWindowBuilder::on_navigation` 在 **builder 上**挂（`WebviewWindow` 事后没有这个方法）
+- 回调判定：同 host + 路径 `/` + 带 `code` 参数
+- 命中后 `on_navigation` 返回 `false`，避免把回调页真的渲染出来
+- `clear_all_browsing_data()` 对应 `clearStorageData`
+- 用户关窗 → `WindowEvent::Destroyed` → channel 收到 Err，`login()` 静默返回（与 Electron 一致）
+- 5 分钟超时，避免窗口卡住时一直挂着
+
+Node 侧改成 `authWindow(url, hostname)`（`native-shim.js` 的 bridge），
+`BrowserWindow` 已完全移出 `git.js`。
+
+### 8.3 实测
+
+```
+git.server        => https://gitlab.pavlovia.org
+git.loadUsers     => null            （读取加密文件成功）
+git.loadProjects  => {}
+git.listGroups    => [真实 Pavlovia 组...]   ← 网络+认证链路通
+git.stage         => ["a.txt"]
+git.getRemote     => null
+git.getProjectInfo => null
+git 事件通道      => ["git"]        ← 走 sendEvent，正常
+```
+
+`git.login` 在纯 sidecar 下静默返回 null（拿不到宿主窗口），符合设计。
+
+---
+
+## 9. 迁移检查清单
 
 每个通道迁移时必须确认：
 

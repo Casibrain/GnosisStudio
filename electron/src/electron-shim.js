@@ -18,8 +18,8 @@
 
 import os from "node:os";
 import path from "node:path";
-import fs from "node:fs";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { dialog, shell } from "./native-shim.js";
 
 /**
@@ -121,42 +121,88 @@ const app = {
 /**
  * safeStorage —— 加密存储 Pavlovia token。
  *
- * D7 决定：不兼容旧密文。这里用 XOR + 本地密钥文件做占位（sidecar 阶段不真正安全），
- * 真正方案在 M6 用 Tauri keychain / stronghold 替换 Rust 侧实现。
+ * **必须兼容 Electron 写下的旧密文**，否则用户现有的 Pavlovia 登录状态会丢失。
+ * 实测本机 `~/Library/Application Support/psychopy4/pavlovia/users.json`
+ * 就是 Electron safeStorage 的产物（`v10` 前缀 = Chromium OSCrypt）。
  *
- * 注意：返回值为 base64 字符串，与 Electron 一致，前端无需感知。
+ * 格式（Chromium OSCrypt，macOS）：
+ *   [3 字节 "v10"] [16 字节 IV] [AES-128-CBC 密文]
+ * 密钥：macOS Keychain 里的 "Electron Safe Storage" 条目，值为 base64 的 16 字节。
+ * 实测该条目存在且可读取，同一个 key 能解开 Electron 写的文件。
+ *
+ * 不自己造 key：一处换了 key，所有旧文件立刻作废，而且用户不会收到任何提示。
  */
-const KEY_FILE = path.join(appDataPath(), APP_NAME, ".storage-key");
 
+/** macOS：从 Keychain 读 Electron 的 OSCrypt 密钥（base64 的 16 字节） */
+function macKeychainKey() {
+    const raw = execFileSync(
+        "security",
+        ["find-generic-password", "-s", "Electron Safe Storage", "-w"],
+        { encoding: "utf8" }
+    ).trim();
+    return Buffer.from(raw, "base64");
+}
+
+/**
+ * Windows：Electron 用 DPAPI 保护一个 32 字节随机密钥，存在
+ * `%APPDATA%\<app>\Local State` 的 os_crypt.encrypted_key 里。
+ * 目前只在 macOS 上验证过；Windows 需要 DPAPI 调用（Rust 侧更适合），
+ * 先明确失败，不要静默降级成"能加密但解不开旧数据"。
+ */
+function windowsKey() {
+    throw new Error(
+        "safeStorage on Windows is not ported yet; Electron DPAPI unwrap needs a Rust-side implementation"
+    );
+}
+
+let cachedKey = null;
 function getKey() {
-    try {
-        return Buffer.from(fs.readFileSync(KEY_FILE, "utf8"), "hex");
-    } catch {
-        const key = cryptoRandom(32);
-        fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true });
-        fs.writeFileSync(KEY_FILE, key.toString("hex"), { mode: 0o600 });
-        return key;
+    if (cachedKey) return cachedKey;
+    if (process.platform === "darwin") {
+        cachedKey = macKeychainKey();
+    } else if (process.platform === "win32") {
+        cachedKey = windowsKey();
+    } else {
+        throw new Error(
+            `safeStorage: unsupported platform ${process.platform} (Electron uses libsecret here)`
+        );
     }
+    return cachedKey;
 }
 
-function cryptoRandom(n) {
-    // Node 内置，跨平台（/dev/urandom 在 Windows 上不存在）
-    return randomBytes(n);
-}
-
-function xor(input, key) {
-    const out = Buffer.alloc(input.length);
-    for (let i = 0; i < input.length; i++) out[i] = input[i] ^ key[i % key.length];
-    return out;
-}
-
+/**
+ * 注意：Electron 的 encryptString 返回 **Buffer**，decryptString 接收 **Buffer**。
+ * git.js 直接把这些 Buffer 写文件 / 读文件，所以这里必须保持同样的类型，
+ * 不能图省事返回 base64 字符串。
+ */
 const safeStorage = {
-    isEncryptionAvailable: () => true,
+    isEncryptionAvailable: () => process.platform === "darwin" || process.platform === "win32",
+
     encryptString(str) {
-        return xor(Buffer.from(str, "utf8"), getKey()).toString("base64");
+        const key = getKey();
+        if (key.length !== 16) {
+            throw new Error(`safeStorage: expected a 16-byte key, got ${key.length}`);
+        }
+        const iv = randomBytes(16);
+        const cipher = createCipheriv("aes-128-cbc", key, iv);
+        const payload = Buffer.concat([cipher.update(str, "utf8"), cipher.final()]);
+        return Buffer.concat([Buffer.from("v10"), iv, payload]);
     },
-    decryptString(enc) {
-        return xor(Buffer.from(enc, "base64"), getKey()).toString("utf8");
+
+    decryptString(buf) {
+        // 兼容旧明文：Electron 版在解密失败时也会回退（见 git.js loadUsers 的 catch）
+        if (!Buffer.isBuffer(buf)) buf = Buffer.from(buf);
+        // 没有 v10 头 = 未加密的旧文件，原样返回
+        if (buf.subarray(0, 3).toString() !== "v10") {
+            return buf.toString("utf8");
+        }
+        const key = getKey();
+        const iv = buf.subarray(3, 19);
+        const payload = buf.subarray(19);
+        // 空明文（只有头+IV）是合法情况：空用户表
+        if (payload.length === 0) return "";
+        const decipher = createDecipheriv("aes-128-cbc", key, iv);
+        return Buffer.concat([decipher.update(payload), decipher.final()]).toString("utf8");
     },
 };
 

@@ -14,7 +14,7 @@ import os from "node:os";
 
 /**
  * @type {{openDialog?: Function, saveDialog?: Function, openPath?: Function,
- *         openExternal?: Function, showItemInFolder?: Function}}
+ *         openExternal?: Function, showItemInFolder?: Function, authWindow?: Function}}
  */
 let bridge = {};
 
@@ -88,3 +88,23 @@ const shell = {
 };
 
 export { dialog, shell };
+
+
+/**
+ * 打开一个 OAuth 登录窗口并等用户登录完成。
+ *
+ * git.js 的 login() 需要真实的 BrowserWindow + session（清 cookie），
+ * Node sidecar 造不出来，所以必须由 Rust 宿主提供。
+ *
+ * @param {string} url 要加载的授权页地址
+ * @param {string} hostname 回调判定用的 host（拿到 ?code= 即完成）
+ * @returns {Promise<string>} 最终的 callback URL
+ */
+export async function authWindow(url, hostname) {
+    if (bridge.authWindow) {
+        return await bridge.authWindow(url, hostname);
+    }
+    throw new Error(
+        "OAuth login needs the host (Rust) bridge; inject via setNativeBridge({ authWindow })"
+    );
+}

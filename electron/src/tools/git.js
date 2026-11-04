@@ -5,9 +5,8 @@ import logging from "./logging.js";
 import http from "isomorphic-git/http/node";
 import fs from "node:fs";
 import path from "node:path";
-import { BrowserWindow } from "electron";
+import { authWindow } from "../native-shim.js";
 import { randint, randof } from "./random.js";
-import { favicon } from "../resources/index.js";
 
 
 // set server URL and client ID
@@ -168,47 +167,23 @@ async function login() {
         code_challenge: challenge,
         code_challenge_method: "S256"
     }).toString()}`;
-    // create authentication window
-    let win = new BrowserWindow({
-        icon: favicon,
-        width: 980,
-        height: 720,
-        show: true
-    });
-    win.removeMenu();
-    // clear all storage data to force fresh login
-    await win.webContents.session.clearStorageData({
-        storages: ['cookies', 'localstorage', 'sessionstorage', 'cachestorage', 'websql', 'indexdb']
-    });
-    // load auth url
-    win.loadURL(url);
-    // promise to wait for user to log in
+    // 开登录窗口并等用户完成。
+    //
+    // 原先这里直接 new BrowserWindow + win.webContents.session.clearStorageData
+    // + did-navigate 监听。Node sidecar 没有 BrowserWindow/session，这三件事
+    // 都交给 Rust 的 auth_window（见 src-tauri/src/system.rs），它负责清 cookie、
+    // 监听导航、拿到 ?code= 后关窗并把 callback URL 返回。
     let code
     try {
-        code = await new Promise((resolve, reject) => {
-            // if window closes before promise is resolved, reject promise
-            win.on("close", reject)
-            // on navigate, resolve if we have a code
-            win.webContents.on("did-navigate", (evt, url) => {
-                // convert url to an object
-                url = new URL(url);
-                // if we got a code...
-                if (server.endsWith(url.hostname) && url.pathname === "/" && url.searchParams.get("code")) {
-                    // resolve the promise
-                    resolve(
-                        url.searchParams.get("code")
-                    )
-                    // remove close handler
-                    win.removeListener('close', reject)
-                    // close the window
-                    win.close()
-                }
-            })
-        })
-    } catch {
-        // if cancelled by user, return harmlessly
+        let callback = new URL(await authWindow(url, server));
+        code = callback.searchParams.get("code");
+        if (!code) return;
+    } catch (err) {
+        // 用户关窗取消 —— 和 Electron 版一样静默返回
+        logging.log(`Login cancelled: ${err?.message ?? err}`)
         return
     }
+
     // get tokens from code
     let data = await fetch(`${server}/oauth/token`, {
         method: "POST",

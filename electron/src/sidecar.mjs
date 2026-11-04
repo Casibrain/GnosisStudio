@@ -59,6 +59,14 @@ const { setNativeBridge } = await import("./native-shim.js");
 const transport = useTransport("jsonrpc");
 const rl = transport.start();
 
+// 把只有宿主能做的事接上（目前是 OAuth 登录窗口，需要真实 BrowserWindow）。
+// 桥接方式：hostRequest() 走 stdin 发 "host.*" 请求，由 Rust 侧处理后回同一 id。
+// 完整的 sidecar 进程管理在 M8 落地，这里先只注入这条桥。
+const { hostRequest } = await import("./sidecar-host.mjs");
+setNativeBridge({
+    authWindow: (url, hostname) => hostRequest("auth_window", [url, hostname]),
+});
+
 // 引入所有 handler 模块 —— 这一步会执行每个文件顶层的 handle() 注册
 await import("./files.js");
 await import("./tools/state.js");

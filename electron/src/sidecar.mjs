@@ -20,6 +20,24 @@ import path from "node:path";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// stdout 是 JSON-RPC 专用通道，任何业务代码的 console.log 都会污染它。
+//
+// 业务代码里 logging.log(...) 默认 echo=true 走 console.log（logging.js:53），
+// execSync 也会经 input() -> output() -> logging.log 打印命令，实测会把
+// 'UV\t>> "..."' 直接写进 stdout，导致 Rust 侧 JSON.parse 失败。
+//
+// 所以：在加载任何业务代码之前，把 console 的输出全部改道 stderr。
+// 不要让业务代码单独改 —— 那要改几十处，且以后新增的 console.log 还会漏。
+// ---------------------------------------------------------------------------
+{
+    const toStderr = (...args) => process.stderr.write(args.map(String).join(" ") + "\n");
+    console.log = toStderr;
+    console.info = toStderr;
+    console.debug = toStderr;
+    // console.warn / console.error 本来就是 stderr，不用动
+}
+
 // 把 "electron" 解析到本目录的 electron-shim.js
 registerHooks({
     resolve(specifier, context, nextResolve) {

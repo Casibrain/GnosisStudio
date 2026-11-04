@@ -1,5 +1,5 @@
 import { app, safeStorage } from "electron";
-import { handle } from "../transport/index.js";
+import { handle, sendEvent } from "../transport/index.js";
 import git from "isomorphic-git";
 import logging from "./logging.js";
 import http from "isomorphic-git/http/node";
@@ -943,10 +943,8 @@ export function output(message) {
     }
     // log message
     logging.log(message, "GIT")
-    // emit event
-    BrowserWindow.getAllWindows().forEach(
-        win => win.webContents.send("git", message)
-    )
+    // emit event（走 transport，sidecar 下才能送达）
+    sendEvent("git", message)
 }
 
 

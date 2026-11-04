@@ -1,9 +1,12 @@
 import proc from "child_process";
 import logging from "../tools/logging.js";
-import { BrowserWindow } from "electron";
 import tcp from "tcp-port-used";
 import semver from "semver";
 import { appVersion } from "../tools/version.js";
+// output() 是**所有**后端->前端事件的唯一出口，必须走 transport：
+// 原先直接 BrowserWindow.getAllWindows().forEach(win => win.webContents.send(...))，
+// sidecar 下 getAllWindows() 返回 []，会让 stdout/stderr/uv/git 事件全部静默丢失。
+import { sendEvent } from "../transport/index.js";
 
 
 export const decoder = new TextDecoder();
@@ -91,28 +94,15 @@ export async function getSafeAddress() {
  * @param {string|Buffer} message Message to send, can be either bytes or a string
  */
 export function output(tag, message) {
-    // get all channels to send output to (using : syntax)
-    let channels = []
-    if (tag) {
-        // add initial tag
-        channels.push(tag)
-        // add each parent in tree
-        while (tag?.includes?.(":")) {
-            tag = tag.substring(0, tag.lastIndexOf(":"))
-            channels.push(tag)
-        }
-    }
     // if given a buffer, decode it
     if (message instanceof Buffer) {
         message = decoder.decode(message)
     }
     // log message
     logging.log(message, tag?.toUpperCase?.())
-    // emit event
-    for (let channel of channels) {
-        BrowserWindow.getAllWindows().forEach(
-            win => win.webContents.send(channel, message)
-        )
+    // emit event (transport 负责层级广播 + 全窗口广播，见 transport/electron.js)
+    if (tag) {
+        sendEvent(tag, message)
     }
 }
 

@@ -199,7 +199,22 @@ BrowserWindow.getAllWindows().forEach(win => win.webContents.send(channel, messa
 
 **动态前缀共 2 个**：`liaison:${tag}`、`menu:${id}`。迁移时不能写死 tag 表。
 
-**注意 `alert` / `error` 的来源**：不是独立 tag，而是 Python 侧 liaison 回传的 `msg.tag`（`liaison.js:119` `this.output(msg.tag, msg)`）→ `output("liaison:" + tag)` → 层级广播同时发 `liaison:alert`、`liaison`。前端 `.listen("alert")` 之所以能收到，是因为 liaison 的 tag 本身叫 `alert`（无冒号），走的是 `output("liaison:alert")` 还是 `output(tag)` 需以运行时为准——**M4 移植时用真实 Python 会话验证一次，不要凭读码推断**。
+**关键：`liaison` 的前缀由 preload 加，不由后端加。** `preload.js:68`：
+
+```js
+listen: (tag, lsnr) => ipcRenderer.on(`liaison:${tag}`, lsnr)
+```
+
+Python 侧 `liaison.js:119` 发的是 `output("liaison:" + msg.tag, msg)`，配合
+层级广播，会同时发 `liaison:alert`、`liaison`。前端 `.listen("alert")` 收到的正是
+`liaison:alert`。**这解释了为什么 alert 能工作**——读码时可验证，不必运行时确认。
+
+> Tauri 侧注意：Tauri 的 `listen()` 没有 preload 自动加前缀这层。桥接实现时
+> 前端若仍写 `.listen("alert")`，Rust 侧要么按约定映射到 `liaison:alert`，
+> 要么在桥接层补齐这层前缀转换。**不要两边都加或都不加**。
+>
+> 其余 `listen` 均**不**加前缀：`python.output.stdout/stderr`、`python.uv`
+> （`preload.js:97-111`）和 `git`（`:134`）直接监听裸 tag。
 
 ### 3.5 参数顺序约定
 
@@ -331,7 +346,88 @@ python.*                × 33
 
 ---
 
-## 6. 前端调用点统计
+## 6. M4：Python 栈实测结论
+
+以下全部来自**真实 Python 会话**（psychopy dev / Python 3.11，本机已有环境），不是读码推断。
+
+### 6.1 走通的全链路
+
+```
+setDirectory("user") → getEnvironments → venv.executable("dev") → venv.getPackages("dev")
+liaison.start → liaison.started → liaison.ready → liaison.send(echo) → liaison.stop
+scripts.run("dev", "/tmp/gstest/hello.py") → scripts.wait → stdout/stderr 事件送达
+```
+
+实测输出：`venv.executable` = `~/Library/Application Support/psychopy4/.python/dev/bin/python3`，
+`getPackages` 返回真实包表，`scripts.wait` 返回 `[0, null]`（退出码 0）。
+
+### 6.2 致命缺陷：`output()` 绕过了 transport（已修）
+
+**这是 M4 最有价值的发现。** `python/utils.js` 的 `output()` 是**所有**后端→前端事件的唯一出口，
+但原实现直接调 `BrowserWindow.getAllWindows()`：
+
+```js
+// 修复前
+for (let channel of channels) {
+    BrowserWindow.getAllWindows().forEach(win => win.webContents.send(channel, message))
+}
+```
+
+sidecar 里 `getAllWindows()` 返回 `[]`（`electron-shim.js`），导致
+**stdout / stderr / uv / git 全部事件静默丢失**——脚本能跑完，但前端一片空白，
+且**不报任何错**。`tools/git.js:947` 是第二个相同缺陷。
+
+修复：两者都改为 `sendEvent(tag, message)`，层级广播交给 transport。
+
+| 文件 | 修复 |
+|---|---|
+| `python/utils.js` `output()` | `BrowserWindow.getAllWindows()...` → `sendEvent(tag, message)` |
+| `tools/git.js` `output()` | 同上 |
+
+**教训**：迁移事件总线时，"注册"和"发送"是两条独立路径。
+M2 只改了注册侧（`ipcMain.handle`），发送侧漏了。任何事件型迁移都要单独核对发送侧。
+
+### 6.3 stdout 污染 JSON-RPC（已修）
+
+业务代码 `logging.log()` 默认 `echo=true` 走 `console.log`，`execSync` 经
+`input() → output() → logging.log` 会把 `UV\t>> "..."` 写进 stdout，
+Rust 侧 `JSON.parse` 直接崩：`Unexpected token 'U', "UV\t>> "/Us"...`。
+
+修复：`sidecar.mjs` 在加载业务代码**之前**把 `console.log/info/debug` 全部改道 stderr。
+不要逐个改业务调用点——那要改几十处，且以后新增的 `console.log` 还会漏。
+
+### 6.4 各通道参数形态（易错，实测记录）
+
+| 通道 | 正确参数 | 错误写法 |
+|---|---|---|
+| `python.venv.*` | `["dev"]` —— **版本号字符串** | 传 `getEnvironments` 返回的对象 → `version.includes is not a function` |
+| `python.scripts.run` | `["dev", "/path/hello.py"]` —— **位置参数** | 传 `[{venv,file}]` 对象 → `version.includes is not a function` |
+| `python.liaison.start` | `["dev"]`，**非幂等** | 连续调两次 → 第二次 `Sent before connected.` |
+
+### 6.5 liaison 事件语义（读码可确认，无需运行时）
+
+- `liaison.send()` 的响应用 **promise 返回**（`pending` 数组），**不产生事件**
+- 只有 Python 主动推送带 `tag` 的消息，才走 `output("liaison:"+tag)` → 广播
+- 所以 echo 测试"事件数为 0"是**正确行为**，不是 bug
+
+层级广播实测（`/tmp/py_hier.mjs`，三组全部通过）：
+
+```
+输入 uv:psychopy-cedrus → 发出 uv:psychopy-cedrus, uv
+输入 liaison:alert      → 发出 liaison:alert, liaison
+输入 menu:abc           → 发出 menu:abc, menu
+无重复发送 ✓
+```
+
+### 6.6 未验证项（留到 M7）
+
+- `python.psychojs.run/stop` —— 依赖 `express` + `BrowserWindow`（`psychojs.js:54`），
+  要等 M7 用 Tauri protocol 替代 express 后再测
+- `python.shell.*` —— 交互式 shell，本轮未测
+
+---
+
+## 7. 前端调用点统计
 
 | 前缀 | 调用点数 | 主要文件 |
 |---|---|---|
@@ -348,7 +444,7 @@ python.*                × 33
 
 ---
 
-## 7. 迁移检查清单
+## 8. 迁移检查清单
 
 每个通道迁移时必须确认：
 

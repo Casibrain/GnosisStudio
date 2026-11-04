@@ -10,21 +10,24 @@ jobs:
       # checkout this repo
       - name: Checkout
         uses: actions/checkout@v4
+      # install pnpm
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
       # install Node
       - name: Install Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 20
-          cache: npm
+          cache: pnpm
       # install dependencies
       - name: Install dependencies
-        run: npm i
+        run: pnpm install --frozen-lockfile
       # build static site
       - name: build
         env:
           BASE_PATH: '/${{ github.event.repository.name }}'
         run: |
-          npm run svelte:build
+          pnpm run svelte:build
       - name: Upload Artifacts
         uses: actions/upload-pages-artifact@v3
         with:

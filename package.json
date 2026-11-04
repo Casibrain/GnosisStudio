@@ -6,6 +6,7 @@
 	"main": "electron/src/index.cjs",
 	"type": "module",
 	"license": "./LICENSE",
+	"packageManager": "pnpm@12.16.1",
 	"build": {
 		"appId": "OpenScienceTools.PsychoPy.Studio",
 		"productName": "PsychoPy Studio",
@@ -125,8 +126,8 @@
 		"svelte:check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"electron:start": "electron electron/src/index.cjs",
 		"electron:lint": "echo \"No linting configured\"",
-		"build": "npm run svelte:build && electron-builder build",
-		"dev": "concurrently \"npm run svelte:dev\" \"wait-on http://localhost:5173 && npm run electron:start\""
+		"build": "pnpm run svelte:build && electron-builder build",
+		"dev": "concurrently \"pnpm run svelte:dev\" \"wait-on http://localhost:5173 && pnpm run electron:start\""
 	},
 	"devDependencies": {
 		"@electron/fuses": "^2.1.3",

@@ -1,7 +1,7 @@
 const path = require('node:path');
 const fs = require("fs");
 const proc = require("child_process");
-const { app, dialog, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, dialog, BrowserWindow, shell } = require('electron');
 
 // make sure psychopy4 folder exists before importing subpackages
 if (!fs.existsSync(path.join(app.getPath("appData"), "psychopy4"))) {
@@ -11,6 +11,7 @@ if (!fs.existsSync(path.join(app.getPath("appData"), "psychopy4"))) {
 }
 
 const { handlers: pythonHandlers } = require("./python");
+const { handle } = require("./transport/index.js");
 const { handlers: gitHandlers } = require("./tools/git.js");
 const { handlers: filesHandlers } = require("./files.js");
 const logging = require("./tools/logging.js");
@@ -237,42 +238,42 @@ app.on("quit", (evt, code) => svelte.process?.kill?.(0));
 const handlers = {
   electron: {
     windows: {
-      new: ipcMain.handle("electron.windows.new", async (evt, target) => await newWindow(target)),
-      get: ipcMain.handle("electron.windows.get", (evt, target) => Object.keys(windows).filter(
+      new: handle("electron.windows.new", async (evt, target) => await newWindow(target)),
+      get: handle("electron.windows.get", (evt, target) => Object.keys(windows).filter(
         id => !windows[id].isDestroyed()
       ).filter(
         id => String(windows[id].webContents.getURL()).includes(target)
       )),
-      send: ipcMain.handle("electron.windows.send", (evt, id, tag, data) => windows[id].webContents.send(tag, data)),
-      focus: ipcMain.handle("electron.windows.focus", (evt, id) => windows[id || evt.sender.id].focus()),
-      devtools: ipcMain.handle("electron.windows.devtools", (evt, id) => windows[id || evt.sender.id].openDevTools()),
-      close: ipcMain.handle("electron.windows.close", (evt, id) => windows[id || evt.sender.id].close()),
-      hideMenu: ipcMain.handle("electron.windows.hideMenu", (evt) => windows[evt.sender.id].removeMenu()),
-      setMenu: ipcMain.handle("electron.windows.setMenu", (evt, template) => setMenu(windows[evt.sender.id], template))
+      send: handle("electron.windows.send", (evt, id, tag, data) => windows[id].webContents.send(tag, data)),
+      focus: handle("electron.windows.focus", (evt, id) => windows[id || evt.sender.id].focus()),
+      devtools: handle("electron.windows.devtools", (evt, id) => windows[id || evt.sender.id].openDevTools()),
+      close: handle("electron.windows.close", (evt, id) => windows[id || evt.sender.id].close()),
+      hideMenu: handle("electron.windows.hideMenu", (evt) => windows[evt.sender.id].removeMenu()),
+      setMenu: handle("electron.windows.setMenu", (evt, template) => setMenu(windows[evt.sender.id], template))
     },
     paths: {
-      documents: ipcMain.handle("electron.paths.documents", (evt) => app.getPath("documents")),
-      user: ipcMain.handle("electron.paths.user", (evt) => path.join(app.getPath("appData"), "psychopy4")),
-      devices: ipcMain.handle("electron.paths.devices", (evt) => path.join(app.getPath("appData"), "psychopy4", "devices.json")),
-      prefs: ipcMain.handle("electron.paths.prefs", (evt) => prefsFile),
+      documents: handle("electron.paths.documents", (evt) => app.getPath("documents")),
+      user: handle("electron.paths.user", (evt) => path.join(app.getPath("appData"), "psychopy4")),
+      devices: handle("electron.paths.devices", (evt) => path.join(app.getPath("appData"), "psychopy4", "devices.json")),
+      prefs: handle("electron.paths.prefs", (evt) => prefsFile),
       pavlovia: {
-        dir: ipcMain.handle("electron.paths.pavlovia", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia")),
-        users: ipcMain.handle("electron.paths.pavlovia.users", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia", "users.json")),
-        projects: ipcMain.handle("electron.paths.pavlovia.projects", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia", "projects.json")),
+        dir: handle("electron.paths.pavlovia", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia")),
+        users: handle("electron.paths.pavlovia.users", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia", "users.json")),
+        projects: handle("electron.paths.pavlovia.projects", (evt) => path.join(app.getPath("appData"), "psychopy4", "pavlovia", "projects.json")),
       }
     },
     files: filesHandlers,
     clipboard: {
-      get: ipcMain.handle("electron.clipboard.get", (evt) => clipboard),
-      set: ipcMain.handle("electron.clipboard.set", (evt, value) => clipboard = value)
+      get: handle("electron.clipboard.get", (evt) => clipboard),
+      set: handle("electron.clipboard.set", (evt, value) => clipboard = value)
     },
     system: {
-      requestKeyboardAccess: ipcMain.handle("electron.system.requestKeyboardAccess", async (evt) => await requestKeyboardAccess()),
-      hasKeyboardAccess: ipcMain.handle("electron.system.hasKeyboardAccess", async (evt) => await hasKeyboardAccess())
+      requestKeyboardAccess: handle("electron.system.requestKeyboardAccess", async (evt) => await requestKeyboardAccess()),
+      hasKeyboardAccess: handle("electron.system.hasKeyboardAccess", async (evt) => await hasKeyboardAccess())
     },
-    version: ipcMain.handle("electron.version", (evt) => appVersion),
-    platform: ipcMain.handle("electron.platform", (evt) => process.platform),
-    quit: ipcMain.handle("electron.quit", (evt) => app.quit())
+    version: handle("electron.version", (evt) => appVersion),
+    platform: handle("electron.platform", (evt) => process.platform),
+    quit: handle("electron.quit", (evt) => app.quit())
   },
   python: pythonHandlers,
   git: gitHandlers,

@@ -214,6 +214,53 @@ ipcMain.handle("python.venv.installPackage", (evt, venv, name, version) => ...)
 invoke("venv_install_package", { venv, name, version })
 ```
 
+### 3.6 来源窗口（`evt.sender.id`）—— 易漏且会静默失效
+
+业务代码有 **9 处**依赖 `evt.sender.id` 判断"哪个窗口发起的调用"：
+
+| 通道 | 用途 |
+|---|---|
+| `electron.files.openDialog` | `windows[evt.sender.id]` 作为对话框父窗口 |
+| `electron.files.saveDialog` | 同上 |
+| `electron.state.updateFrame` | 更新对应窗口的状态 |
+| `electron.windows.focus` | `windows[id \|\| evt.sender.id]` |
+| `electron.windows.devtools` | 同上 |
+| `electron.windows.close` | 同上 |
+| `electron.windows.hideMenu` | `windows[evt.sender.id]` |
+| `electron.windows.setMenu` | 同上 |
+
+**迁移约束**：transport 必须保证第一个参数上有 `sender.id`。
+- Electron：数字 webContents id
+- JSON-RPC：前端 `invoke` 时显式带上的窗口 label 字符串
+
+业务代码统一用 `senderId(evt)` 取值（`transport/index.js`），**不要直接摸 `evt.sender.id`**，否则切换后端时会静默拿到 undefined。
+
+> 注意 `evt.sender.id` 在 Electron 是数字、在 Tauri 是字符串，`windows[id]` 这类字典的 key 类型随之改变。M5 移植窗口管理时需统一改为 label。
+
+---
+
+## 4. 传输层实现（M2）
+
+已落地 `electron/src/transport/`，把 handler 注册与 Electron 解耦：
+
+| 文件 | 作用 |
+|---|---|
+| `transport/index.js` | 门面：`handle` / `on` / `sendEvent` / `useTransport` / `senderId` |
+| `transport/electron.js` | 默认后端，行为与直接调 `ipcMain` 完全一致 |
+| `transport/jsonrpc.js` | sidecar 后端，JSON-RPC 2.0 over NDJSON |
+
+**改动范围**：5 个文件、97 处引用，仅替换注册函数，**业务逻辑零改动**：
+`files.js`、`tools/state.js`、`tools/git.js`、`python/index.js`、`index.cjs`
+
+**已验证**（`/tmp/rpc_test.mjs`，真实往返）：
+- 正常返回 → `result`
+- handler 抛错 → `error.message` 为**裸字符串**
+- `sender` 透传到 `evt.sender.id`
+- 未注册方法 → `-32601`
+- 层级广播：`uv:psychopy-cedrus` 同时发出 `uv:psychopy-cedrus` 与 `uv`
+
+**注意**：`index.cjs` 是 CommonJS，通过 `require()` 引入 ESM 的 transport。已实测 Node 22 的 `require(ESM)` 与 `import` **共享同一模块实例**，因此后端切换是全局生效的，不存在双份 registry。
+
 ---
 
 ## 4. 前端调用点统计

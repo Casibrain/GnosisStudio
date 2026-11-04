@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { app, ipcMain } from "electron";
+import { app } from "electron";
+import { handle, on } from "../transport/index.js";
 
 
 // path to JSON file with details of last app load
@@ -106,10 +107,10 @@ Object.assign(state.profiles, lastState.profiles)
 
 
 export const handlers = {
-    updateFrame: ipcMain.handle("electron.state.updateFrame", (evt, details) => updateFrame(evt.sender.id, details)),
-    setProfiles: ipcMain.handle("electron.state.setProfiles", (evt, key, value) => setProfiles(key, value)),
+    updateFrame: handle("electron.state.updateFrame", (evt, details) => updateFrame(evt.sender.id, details)),
+    setProfiles: handle("electron.state.setProfiles", (evt, key, value) => setProfiles(key, value)),
     // synchronous so that profiles are available as soon as a window loads
-    getProfiles: ipcMain.on("electron.state.getProfiles", (evt) => { evt.returnValue = getProfiles() }),
+    getProfiles: on("electron.state.getProfiles", (evt) => { evt.returnValue = getProfiles() }),
 }
 
 

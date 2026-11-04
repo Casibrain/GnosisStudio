@@ -1,4 +1,5 @@
-import { ipcMain, dialog, shell } from "electron";
+import { dialog, shell } from "electron";
+import { handle } from "./transport/index.js";
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
@@ -246,16 +247,16 @@ export async function downloadFolder(
  * IPC handlers for each function, accessible from the renderer as `electron.files.<name>`
  */
 export const handlers = {
-    load: ipcMain.handle("electron.files.load", (evt, file) => load(file)),
-    save: ipcMain.handle("electron.files.save", (evt, file, content) => save(file, content)),
-    exists: ipcMain.handle("electron.files.exists", (evt, file) => exists(file)),
-    stat: ipcMain.handle("electron.files.stat", (evt, file) => stat(file)),
-    mkdir: ipcMain.handle("electron.files.mkdir", (evt, folder, recursive = true) => mkdir(folder, recursive)),
-    openDialog: ipcMain.handle("electron.files.openDialog", (evt, options) => openDialog(options, windows[evt.sender.id])),
-    saveDialog: ipcMain.handle("electron.files.saveDialog", (evt, options) => saveDialog(options, windows[evt.sender.id])),
-    scandir: ipcMain.handle("electron.files.scandir", (evt, root, recursive) => scandir(root, recursive)),
-    showItemInFolder: ipcMain.handle("electron.files.showItemInFolder", (evt, folder) => showItemInFolder(folder)),
-    openPath: ipcMain.handle("electron.files.openPath", (evt, target) => openPath(target)),
-    openExternal: ipcMain.handle("electron.files.openExternal", (evt, url) => openExternal(url)),
-    downloadFolder: ipcMain.handle("electron.files.downloadFolder", (evt, url, target, name) => downloadFolder(url, target, name))
+    load: handle("electron.files.load", (evt, file) => load(file)),
+    save: handle("electron.files.save", (evt, file, content) => save(file, content)),
+    exists: handle("electron.files.exists", (evt, file) => exists(file)),
+    stat: handle("electron.files.stat", (evt, file) => stat(file)),
+    mkdir: handle("electron.files.mkdir", (evt, folder, recursive = true) => mkdir(folder, recursive)),
+    openDialog: handle("electron.files.openDialog", (evt, options) => openDialog(options, windows[evt.sender.id])),
+    saveDialog: handle("electron.files.saveDialog", (evt, options) => saveDialog(options, windows[evt.sender.id])),
+    scandir: handle("electron.files.scandir", (evt, root, recursive) => scandir(root, recursive)),
+    showItemInFolder: handle("electron.files.showItemInFolder", (evt, folder) => showItemInFolder(folder)),
+    openPath: handle("electron.files.openPath", (evt, target) => openPath(target)),
+    openExternal: handle("electron.files.openExternal", (evt, url) => openExternal(url)),
+    downloadFolder: handle("electron.files.downloadFolder", (evt, url, target, name) => downloadFolder(url, target, name))
 }

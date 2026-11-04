@@ -1,4 +1,5 @@
-import { app, ipcMain, safeStorage } from "electron";
+import { app, safeStorage } from "electron";
+import { handle } from "../transport/index.js";
 import git from "isomorphic-git";
 import logging from "./logging.js";
 import http from "isomorphic-git/http/node";
@@ -950,26 +951,26 @@ export function output(message) {
 
 
 export const handlers = {
-    output: ipcMain.handle("git.output", (evt, message) => output(message)),
-    server: ipcMain.handle("git.server", (evt) => server),
-    login: ipcMain.handle("git.login", (evt) => login()),
-    loadUsers: ipcMain.handle("git.loadUsers", (evt) => loadUsers()),
-    clearUsers: ipcMain.handle("git.clearUsers", (evt) => clearUsers()),
-    listUsers: ipcMain.handle("git.listUsers", (evt) => Object.keys(users)),
-    listGroups: ipcMain.handle("git.listGroups", (evt, username) => listGroups(username)),
-    listSurveys: ipcMain.handle("git.listSurveys", (evt, username) => listSurveys(username)),
-    getUserInfo: ipcMain.handle("git.getUserInfo", (evt, username) => users[username]?.profile),
-    authenticateURL: ipcMain.handle("git.authenticateURL", async (evt, url, username) => (await authenticateURL(url, username)).toString()),
-    getRemote: ipcMain.handle("git.getRemote", (evt, folder, user) => getRemote(folder, user)),
-    getProjectInfo: ipcMain.handle("git.getProjectInfo", (evt, details, username) => getProjectInfo(details, username)),
-    clone: ipcMain.handle("git.clone", (evt, details, username) => clone(details, username)),
-    fork: ipcMain.handle("git.fork", (evt, details, username) => fork(details, username)),
-    listProjectForks: ipcMain.handle("git.listProjectForks", (evt, project, username) => listProjectForks(project, username)),
-    pull: ipcMain.handle("git.pull", (evt, folder, user, force=true) => pull(folder, user, force)),
-    stage: ipcMain.handle("git.stage", (evt, folder) => stage(folder)),
-    commit: ipcMain.handle("git.commit", (evt, message, folder, user) => commit(message, folder, user)),
-    push: ipcMain.handle("git.push", (evt, folder, user, force=false) => push(folder, user, force)),
-    newProject: ipcMain.handle("git.newProject", (evt, details, folder, user) => newProject(details, folder, user)),
-    loadProjects: ipcMain.handle("git.loadProjects", (evt) => loadProjects()),
-    linkProject: ipcMain.handle("git.linkProject", (evt, key, folder) => linkProject(key, folder))
+    output: handle("git.output", (evt, message) => output(message)),
+    server: handle("git.server", (evt) => server),
+    login: handle("git.login", (evt) => login()),
+    loadUsers: handle("git.loadUsers", (evt) => loadUsers()),
+    clearUsers: handle("git.clearUsers", (evt) => clearUsers()),
+    listUsers: handle("git.listUsers", (evt) => Object.keys(users)),
+    listGroups: handle("git.listGroups", (evt, username) => listGroups(username)),
+    listSurveys: handle("git.listSurveys", (evt, username) => listSurveys(username)),
+    getUserInfo: handle("git.getUserInfo", (evt, username) => users[username]?.profile),
+    authenticateURL: handle("git.authenticateURL", async (evt, url, username) => (await authenticateURL(url, username)).toString()),
+    getRemote: handle("git.getRemote", (evt, folder, user) => getRemote(folder, user)),
+    getProjectInfo: handle("git.getProjectInfo", (evt, details, username) => getProjectInfo(details, username)),
+    clone: handle("git.clone", (evt, details, username) => clone(details, username)),
+    fork: handle("git.fork", (evt, details, username) => fork(details, username)),
+    listProjectForks: handle("git.listProjectForks", (evt, project, username) => listProjectForks(project, username)),
+    pull: handle("git.pull", (evt, folder, user, force=true) => pull(folder, user, force)),
+    stage: handle("git.stage", (evt, folder) => stage(folder)),
+    commit: handle("git.commit", (evt, message, folder, user) => commit(message, folder, user)),
+    push: handle("git.push", (evt, folder, user, force=false) => push(folder, user, force)),
+    newProject: handle("git.newProject", (evt, details, folder, user) => newProject(details, folder, user)),
+    loadProjects: handle("git.loadProjects", (evt) => loadProjects()),
+    linkProject: handle("git.linkProject", (evt, key, folder) => linkProject(key, folder))
 }

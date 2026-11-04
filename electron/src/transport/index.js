@@ -10,39 +10,44 @@
  *     foo: handle("python.foo.bar", async (evt, a, b) => ...)
  *   };
  *
- * Electron 实现保持原有语义（evt 首参、handler 抛异常 → reject）。
- * JSON-RPC 实现会去掉 evt 首参，并把异常转成 JSON-RPC error。
- *
  * 关键约束（见 docs/ipc-contract.md §3）：
  *   - 错误语义：Tauri 侧 reject 是裸字符串，不要包装成 {error: ...}
  *   - 同步通道：Electron 的 sendSync 无等价物，getProfiles 已决定改异步（D6）
  *   - 事件广播：必须保留层级广播 + 全窗口广播
- *   - **来源窗口**：业务代码里 9 处用了 `evt.sender.id`（openDialog/saveDialog/
- *     updateFrame/windows.focus|devtools|close|hideMenu|setMenu）。transport 必须
- *     保证第一个参数上有可用的来源标识，否则这些通道会在 sidecar 下静默失效。
- *     Electron: evt.sender.id 是数字；JSON-RPC: evt.sender.id 是窗口 label 字符串。
- *     调用方用 `senderId(evt)` 取值，不要直接摸 evt.sender.id。
+ *   - 来源窗口：业务代码里 8 处用了 `evt.sender.id`，用 senderId(evt) 取值
+ *
+ * 后端**按需静态导入**：electron 后端只在真正 useTransport("electron") 时加载，
+ * 否则 sidecar 会因为 transport/electron.js 顶层 import ipcMain 而崩。
+ * 为避免异步，这里用同步 require（require(ESM) 在 Node 22 可用且共享实例）。
  */
 
-import * as electron from "./electron.js";
-import * as jsonrpc from "./jsonrpc.js";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
 
 /**
- * 传输后端注册表。默认 electron，sidecar 启动时切到 jsonrpc。
+ * 传输后端。默认 electron。
  * @type {{handle: Function, on: Function, sendEvent: Function, listHandlers: Function}}
  */
-let backend = electron;
+let backend = null;
+
+/** 已注册的通道（与后端无关，便于在切换后端前后做契约校验） */
+const registry = { handle: new Set(), on: new Set() };
 
 /**
  * 切换传输后端
  * @param {"electron"|"jsonrpc"} name
- * @param {object} [options] jsonrpc 后端的配置（端口/管道名等）
+ * @param {object} [options] jsonrpc 后端的配置
  */
 export function useTransport(name, options = {}) {
     if (name === "electron") {
-        backend = electron;
+        // 惰性加载，避免 sidecar 环境下触碰 ipcMain
+        backend = require("./electron.js");
     } else if (name === "jsonrpc") {
-        backend = jsonrpc.create(options);
+        backend = require("./jsonrpc.js").create(options);
+        // jsonrpc 后端是新实例，把已注册的通道重放一遍
+        for (const [channel, fn] of registered.handle) backend.handle(channel, fn);
+        for (const [channel, fn] of registered.on) backend.on(channel, fn);
     } else {
         throw new Error(`Unknown transport: ${name}`);
     }
@@ -54,6 +59,9 @@ export function currentTransport() {
     return backend;
 }
 
+/** 记录一份，供后端切换时重放 */
+const registered = { handle: new Map(), on: new Map() };
+
 /**
  * 注册一个请求-响应通道
  * @param {string} channel 通道名（如 "python.uv.install"）
@@ -61,18 +69,22 @@ export function currentTransport() {
  * @returns {Function} 原样返回 fn，保持 `handlers.xxx = handle(...)` 的赋值形式不变
  */
 export function handle(channel, fn) {
-    backend.handle(channel, fn);
+    registered.handle.set(channel, fn);
+    registry.handle.add(channel);
+    backend?.handle(channel, fn);
     return fn;
 }
 
 /**
- * 注册一个同步通道（仅 Electron 支持；jsonrpc 下抛错，因为已决定改异步）
+ * 注册一个同步通道（仅 Electron 支持；jsonrpc 下按异步处理）
  * @param {string} channel
  * @param {Function} fn
  * @returns {Function}
  */
 export function on(channel, fn) {
-    backend.on(channel, fn);
+    registered.on.set(channel, fn);
+    registry.on.add(channel);
+    backend?.on(channel, fn);
     return fn;
 }
 
@@ -82,14 +94,17 @@ export function on(channel, fn) {
  * @param {*} message
  */
 export function sendEvent(tag, message) {
-    backend.sendEvent(tag, message);
+    backend?.sendEvent(tag, message);
 }
 
 /**
- * 列出已注册通道（用于生成契约校验）
+ * 列出已注册通道（用于契约校验）
  */
 export function listHandlers() {
-    return backend.listHandlers();
+    return {
+        handle: [...registry.handle],
+        on: [...registry.on],
+    };
 }
 
 /**
@@ -103,4 +118,26 @@ export function listHandlers() {
  */
 export function senderId(evt) {
     return evt?.sender?.id;
+}
+
+/**
+ * 窗口查找表。Electron 主进程启动后调用 `setWindowRegistry(windows)` 注入；
+ * sidecar 下保持 null（没有窗口对象，对话框由 Rust 侧处理）。
+ *
+ * 这样 files.js 既能拿到父窗口，又不用静态 import frames.js
+ * （frames.js → svelte.js → Electron GUI 依赖链，sidecar 下会崩）。
+ */
+let windowRegistry = null;
+
+export function setWindowRegistry(windows) {
+    windowRegistry = windows;
+}
+
+/**
+ * @param {string|number} id
+ * @returns {object|undefined} Electron BrowserWindow 或 undefined
+ */
+export function getWindowById(id) {
+    if (!windowRegistry) return undefined;
+    return windowRegistry[id];
 }

@@ -1,11 +1,10 @@
 import { dialog, shell } from "electron";
-import { handle } from "./transport/index.js";
+import { handle, senderId, getWindowById } from "./transport/index.js";
 import fs from "node:fs";
 import https from "node:https";
 import path from "node:path";
 import { extract as unzip } from "@electron-internal/extract-zip";
 import { extract as untar } from "tar";
-import { windows } from "./frames.js";
 
 
 /**
@@ -246,14 +245,25 @@ export async function downloadFolder(
 /**
  * IPC handlers for each function, accessible from the renderer as `electron.files.<name>`
  */
+/**
+ * 取对话框的父窗口。
+ *
+ * 原先直接 `windows[evt.sender.id]`，但那会把 frames.js（含 Electron GUI 依赖）
+ * 拖进 sidecar。改为通过 transport 的窗口注册表拿，sidecar 下为 undefined
+ * （由 native-shim 的 dialog bridge 处理，它不需要父窗口对象）。
+ */
+function parentWindow(evt) {
+    return getWindowById(senderId(evt) ?? "");
+}
+
 export const handlers = {
     load: handle("electron.files.load", (evt, file) => load(file)),
     save: handle("electron.files.save", (evt, file, content) => save(file, content)),
     exists: handle("electron.files.exists", (evt, file) => exists(file)),
     stat: handle("electron.files.stat", (evt, file) => stat(file)),
     mkdir: handle("electron.files.mkdir", (evt, folder, recursive = true) => mkdir(folder, recursive)),
-    openDialog: handle("electron.files.openDialog", (evt, options) => openDialog(options, windows[evt.sender.id])),
-    saveDialog: handle("electron.files.saveDialog", (evt, options) => saveDialog(options, windows[evt.sender.id])),
+    openDialog: handle("electron.files.openDialog", (evt, options) => openDialog(options, parentWindow(evt))),
+    saveDialog: handle("electron.files.saveDialog", (evt, options) => saveDialog(options, parentWindow(evt))),
     scandir: handle("electron.files.scandir", (evt, root, recursive) => scandir(root, recursive)),
     showItemInFolder: handle("electron.files.showItemInFolder", (evt, folder) => showItemInFolder(folder)),
     openPath: handle("electron.files.openPath", (evt, target) => openPath(target)),

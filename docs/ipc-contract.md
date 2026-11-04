@@ -263,7 +263,75 @@ invoke("venv_install_package", { venv, name, version })
 
 ---
 
-## 4. 前端调用点统计
+## 5. M3：进程分层与通道归属
+
+### 5.1 三层分工
+
+| 层 | 职责 | 通道数 |
+|---|---|---|
+| **Rust**（Tauri 主进程） | 窗口、菜单、对话框、剪贴板、路径、单实例、打包、协议 | **22** |
+| **Node sidecar**（`electron/src/sidecar.mjs`） | files、state、git、python 全部业务逻辑 | **70** |
+| **Python**（由 sidecar 拉起） | psychopy 环境、实验编译、liaison 长连接 | — |
+
+合计 92，与 §1 契约完全对齐。
+
+### 5.2 通道归属明细
+
+**Rust 提供（22 个）** —— 实现于 `demo/GnosisStudio/src-tauri/src/system.rs`
+
+```
+electron.paths.*        × 7   documents / user / devices / prefs / pavlovia{,.users,.projects}
+electron.windows.*      × 8   new / get / send / focus / close / devtools / hideMenu / setMenu
+electron.clipboard.*    × 2   get / set
+electron.system.*       × 2   hasKeyboardAccess / requestKeyboardAccess
+electron.platform       × 1
+electron.version        × 1
+electron.quit           × 1
+```
+
+**sidecar 提供（70 个）**
+
+```
+electron.files.*        × 12
+electron.state.*        × 3   （含唯一的同步通道 getProfiles）
+git.*                   × 22
+python.*                × 33
+```
+
+### 5.3 sidecar 如何复用 Electron 业务代码
+
+`sidecar.mjs` 用 `module.registerHooks` 把模块名 `"electron"` 重定向到 `electron-shim.js`，
+因此 **14 个业务文件一行不改**就能在 sidecar 下运行。
+
+`electron-shim.js` 提供：
+- `app.getPath("appData"/"documents")` —— 平台目录，**必须与 Electron 布局一致**，否则用户已有 venv/设置会"消失"
+- `app.on/whenReady/quit/isPackaged`
+- `safeStorage` —— 过渡实现（本地密钥 + XOR），M6 换 keychain（D7 已定不兼容旧密文）
+- `BrowserWindow.getAllWindows` —— 返回空数组，广播由 transport 接管
+
+`native-shim.js` 提供 `dialog`/`shell`：
+- `shell.*` 用 Node `exec` 调平台命令，可直接工作
+- `dialog.*Sync` 需要宿主 GUI，**故意抛错**而不是静默返回 null（后者会让用户以为"取消了"）
+- 通过 `setNativeBridge()` 预留 Rust 注入点，M8 接线
+
+### 5.4 M3 完成时发现并修掉的耦合
+
+| 问题 | 修法 |
+|---|---|
+| `files.js` 静态 `import { windows } from "./frames.js"`，会把 frames → svelte → Electron GUI 整条链拖进 sidecar | 改为 `transport.getWindowById(senderId(evt))`，Electron 启动时 `setWindowRegistry(windows)` 注入 |
+| `transport/index.js` 顶层 import 两个后端，sidecar 加载即触 `ipcMain` | 后端改惰性 `require`；`handle()` 在注册表里缓存并支持切换后重放 |
+
+### 5.5 行为差异（已知且有意）
+
+| 项 | Electron | Tauri/M3 | 说明 |
+|---|---|---|---|
+| `electron.platform` | `"darwin"/"win32"/"linux"` | 同左（Rust 侧映射 `macos`→`darwin`） | 前端判断依赖此值，必须映射 |
+| `electron.clipboard.*` | 模块级变量，**非系统剪贴板** | `Mutex<Option<Value>>` | 前端 `clipboard.js` 只当内存存储用 |
+| `postinstall` | 无 | `pnpm install` 会看到 `dmg-builder` 可选依赖警告 | 无害 |
+
+---
+
+## 6. 前端调用点统计
 
 | 前缀 | 调用点数 | 主要文件 |
 |---|---|---|
@@ -280,7 +348,7 @@ invoke("venv_install_package", { venv, name, version })
 
 ---
 
-## 5. 迁移检查清单
+## 7. 迁移检查清单
 
 每个通道迁移时必须确认：
 

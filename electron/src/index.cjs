@@ -11,7 +11,7 @@ if (!fs.existsSync(path.join(app.getPath("appData"), "psychopy4"))) {
 }
 
 const { handlers: pythonHandlers } = require("./python");
-const { handle } = require("./transport/index.js");
+const { handle, setWindowRegistry } = require("./transport/index.js");
 const { handlers: gitHandlers } = require("./tools/git.js");
 const { handlers: filesHandlers } = require("./files.js");
 const logging = require("./tools/logging.js");
@@ -20,6 +20,8 @@ const { favicon, splash } = require("./resources/index.js");
 const { appVersion, isDev } = require('./tools/version.js');
 const { handlers: stateHandlers, lastState, newFrame, updateFrame, saveState } = require('./tools/state.js');
 const { windows, newWindow, setMenu } = require("./frames.js");
+// 把窗口表注入 transport，供 files.js 查对话框父窗口（见 transport/index.js）
+setWindowRegistry(windows);
 const { details: svelte, startSvelte } = require("./svelte.js");
 const { prefs, prefsFile } = require("./tools/preferences.js");
 const { requestKeyboardAccess, hasKeyboardAccess } = require("./tools/system.js");

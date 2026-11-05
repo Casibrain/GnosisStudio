@@ -137,6 +137,7 @@
 		"@sveltejs/adapter-static": "^3.0.9",
 		"@sveltejs/kit": "^2.70.2",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
+		"@tauri-apps/cli": "^2.12.4",
 		"concurrently": "^10.0.6",
 		"electron": "^44.0.0",
 		"electron-builder": "*",

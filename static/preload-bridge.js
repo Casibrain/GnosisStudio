@@ -88,6 +88,9 @@
       // 前端有 `await electron.platform()`，所以这里返回 Promise 也能用
       return call("platform");
     },
+    version: function () {
+      return call("app_version");
+    },
     windows: {
       new: function (target) { return call("windows_new", { target: target }); },
       get: function (target) { return call("windows_get", { target: target }); },

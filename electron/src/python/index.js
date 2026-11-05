@@ -27,7 +27,10 @@ export const handlers = {
     },
     venv: {
         setup: handle("python.venv.setup", async (evt, venv, prerelease=undefined) => (await getVenv(venv)).setup(prerelease)),
-        executable: handle("python.venv.executable", async (evt, venv) => (await getVenv(venv)).executable),
+        executable: handle("python.venv.executable", async (evt, venv) => {
+            const v = await getVenv(venv);
+            return v ? v.executable : null;
+        }),
         installPackage: handle("python.venv.installPackage", async (evt, venv, name, version=undefined) => (await getVenv(venv)).installPackage(name, version)),
         uninstallPackage: handle("python.venv.uninstallPackage", async (evt, venv, name) => (await getVenv(venv)).uninstallPackage(name)),
         getPackages: handle("python.venv.getPackages", async (evt, venv) => (await getVenv(venv)).getPackages()),

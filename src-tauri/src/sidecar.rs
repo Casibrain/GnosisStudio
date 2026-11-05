@@ -67,6 +67,7 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::from(log_err))
         .env("GNOSTIS_HOST", "1")
+        .env("GNOSTIS_APP_NAME", "psychopy4")
         .spawn()
         .map_err(|e| format!("failed to spawn sidecar ({node} {script}): {e}"))?;
 

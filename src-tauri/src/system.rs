@@ -218,6 +218,16 @@ pub async fn windows_get<R: Runtime>(app: AppHandle<R>, target: String) -> Vec<S
         .collect()
 }
 
+/// 向所有窗口广播事件（对应 preload 的 electron.windows.emit）。
+#[tauri::command]
+pub async fn windows_emit<R: Runtime>(
+    app: AppHandle<R>,
+    tag: String,
+    data: serde_json::Value,
+) -> Result<(), String> {
+    app.emit(&tag, data).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn windows_send<R: Runtime>(
     app: AppHandle<R>,

@@ -10,10 +10,20 @@
 #![allow(dead_code)]
 
 use serde_json::json;
+use tauri::Manager;
 
 mod deeplink;
 mod sidecar;
 mod system;
+
+/// 诊断用：让页面把状态回传给 Rust 打印。
+/// webview 的 console 在 GUI 应用下拿不到，这是唯一可靠的回传通道。
+#[tauri::command]
+fn diag_report(key: String, value: String) {
+    println!("[diag] {key} = {value}");
+    // 同时写文件：GUI 下 stdout 可能被重定向到 /dev/null
+    let _ = std::fs::write(format!("/tmp/gnosis-diag-{key}.txt"), &value);
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -73,6 +83,52 @@ pub fn run() {
                     }
                 });
             }
+            // 白屏排查：GNOSTIS_DUMP_DOM=1 时把页面真实状态画到左上角，截图即可读。
+            // webview 的 console 在 GUI 下看不到；截图只能看出"白"，看不出
+            // "白是因为没渲染"还是"因为 CSS 变量没加载"。
+            if std::env::var("GNOSTIS_DUMP_DOM").is_ok() {
+                let h = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                    println!("[dom] dumping after 10s");
+                    match h.get_webview_window("main") {
+                        Some(_) => println!("[dom] found main window"),
+                        None => println!("[dom] NO main window, have: {:?}", h.webview_windows().keys().collect::<Vec<_>>()),
+                    }
+                    if let Some(w) = h.get_webview_window("main") {
+                        let js = r#"
+                          (function(){
+                            var out = [];
+                            try {
+                              out.push('electron=' + (typeof window.electron));
+                              var c = document.querySelector('.container');
+                              var cs = c ? getComputedStyle(c) : null;
+                              out.push('bg=' + (cs ? cs.backgroundColor : 'no-container'));
+                              out.push('mantle=' + (cs ? ('[' + cs.getPropertyValue('--mantle') + ']') : 'nil'));
+                              out.push('views=' + document.querySelectorAll('.view').length);
+                              out.push('links=' + document.querySelectorAll('link[rel=stylesheet]').length);
+                            } catch(e) { out.push('ERR:' + e.message); }
+                            var box = document.createElement('pre');
+                            box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;background:#000;color:#0f0;font:16px monospace;padding:12px;margin:0;white-space:pre-wrap';
+                            box.textContent = 'DIAG\n' + out.join('\n');
+                            document.body.appendChild(box);
+                            document.title = 'DIAG-' + out.join(';');
+                          })()
+                        "#;
+                        match w.eval(js) {
+                            Ok(()) => println!("[dom] eval ok"),
+                            Err(e) => println!("[dom] eval failed: {e}"),
+                        }
+                        // 强制置前并移到主屏可见区域，否则截图拍到的是别的窗口
+                        let _ = w.unminimize();
+                        let _ = w.show();
+                        let _ = w.set_always_on_top(true);
+                        let _ = w.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(50, 50)));
+                        let _ = w.set_size(tauri::Size::Physical(tauri::PhysicalSize::new(1500, 900)));
+                        let _ = w.set_focus();
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -92,6 +148,7 @@ pub fn run() {
             system::windows_new,
             system::windows_get,
             system::windows_send,
+            system::windows_emit,
             system::windows_focus,
             system::windows_close,
             system::windows_devtools,
@@ -106,6 +163,7 @@ pub fn run() {
             system::auth_window,
             system::psychojs_run,
             system::psychojs_stop,
+            diag_report,
             // Node sidecar 桥接
             sidecar::node_call,
             sidecar::node_ready,

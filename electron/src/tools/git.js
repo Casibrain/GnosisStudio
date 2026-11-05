@@ -547,6 +547,10 @@ export async function newProject(details, folder, username) {
  * @param {string} folder Folder in which to create the gitignore file
  */
 function setupGitIgnore(folder) {
+    if (!folder) {
+        logging.log("setupGitIgnore: folder is undefined, skipping");
+        return;
+    }
     // only proceed if there isn't already a .gitignore (user may have made their own)
     if (
         fs.existsSync(path.join(folder, ".gitignore"))
@@ -592,6 +596,10 @@ async function sanitize(folder) {
 
 
 export async function getRemote(folder, username=undefined) {
+    if (!folder) {
+        logging.log("getRemote: folder is undefined, returning null");
+        return null;
+    }
     // sanitize remote
     sanitize(folder)
     // get raw remote from config

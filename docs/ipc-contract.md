@@ -721,3 +721,58 @@ GUI 应用下 `stderr(Stdio::inherit())` 到不了终端，出问题时这是唯
 ---
 
 ## 12. 迁移检查清单
+
+## 13. M9：深链与单实例
+
+### 13.1 语义（照抄 Electron 版）
+
+| 入参 | 行为 |
+|---|---|
+| `psychopy-studio://<group>/<name>` | 打开 `runner?projectOpen=<group>/<name>` |
+| `*.psyexp` | 打开 `builder?fileOpen=<path>` |
+| `*.psyrun` | 打开 `runner?fileOpen=<path>` |
+| 其他 | 记日志，不开窗口 |
+
+scheme 必须与 Electron 版一字不差（`psychopy-studio`）——改了用户机器上已注册的
+默认打开方式全部失效。
+
+### 13.2 三个踩过的坑
+
+**窗口 label 不能含 `?` 和 `=`。** Tauri 的 label 只允许 alphanumeric 与
+`-` `/` `:` `_`。而 target 形如 `builder?fileOpen=/a.psyexp`，直接拿来当 label
+会硬报错 `Window labels must only include alphanumeric characters...`。
+现在 `window_label()` 只取 query 之前的部分并净化，同一视图前缀映射到同一 label，
+正好也是 `windows_get` 的去重依据。
+
+**query 必须拼在 `/index.html` 之后。** 早先把 target 整体当路径，
+得到 `builder?fileOpen=x/index.html` —— 无效路径，窗口白屏。
+现在 `window_url()` 把 path/query 拆开：`builder/index.html?fileOpen=/a.psyexp`。
+
+**`OpenUrlEvent` 不带 `AppHandle`。** 只有 `urls()`，所以要在 `register()`
+时就 clone 一份 handle 进闭包，不能像其他事件那样从 event 上取。
+
+### 13.3 验证
+
+```
+$ ./gnosis-studio &
+$ ./gnosis-studio /tmp/fake.psyexp &
+[deeplink] /tmp/fake.psyexp -> builder?fileOpen=/tmp/fake.psyexp
+$ pgrep -f target/debug/gnosis-studio | wc -l
+1
+```
+
+单实例生效（第二实例静默退出），深链路由正确，Builder 窗口正常开出，
+菜单栏与 Electron 版一致。
+
+### 13.4 已知问题：图标不显示
+
+视图工具栏的按钮图标渲染为空白方块。`<use href>` 引用外部 SVG 在 Tauri 的
+`tauri://localhost` origin 下被当作跨域资源，webview 不加载。
+Electron 用 `file://` 加载没有这个限制。
+
+图标文件本身没问题（`dist/icons/` 下 91 个 SVG 齐全，路径正确）。
+修法有两条，都留到 UI 收尾阶段：
+- 把 SVG 内联成 data URI（`Icon.svelte` 已有 blob 分支，改走那条）
+- 或注册自定义 `asset://` 协议并放宽 CSP
+
+不影响 M9 验收：这是渲染层问题，不是桥接问题。

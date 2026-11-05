@@ -1,0 +1,63 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Gnosis Studio",
+  "version": "2027.1.0",
+  "identifier": "com.casibrain.gnosis-studio",
+  "build": {
+    "beforeDevCommand": "pnpm svelte:dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm svelte:build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Gnosis Studio",
+        "width": 1600,
+        "height": 900
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "psyexp"
+        ],
+        "name": "PsychoPy Experiment",
+        "description": "PsychoPy Experiment",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "psyrun"
+        ],
+        "name": "PsychoPy Run Configuration",
+        "description": "PsychoPy Run Configuration",
+        "role": "Editor"
+      }
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "psychopy-studio"
+        ]
+      }
+    }
+  }
+}

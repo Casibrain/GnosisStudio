@@ -1,0 +1,44 @@
+[package]
+name = "gnosis-studio"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "gnosis_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+# 单实例：第二实例的 argv 交给第一个实例（Electron 的 requestSingleInstanceLock 对应物）
+tauri-plugin-single-instance = "2"
+# psychopy-studio:// 深链（open-url）。macOS 走 kAEGetURL，Linux/Windows 走 argv
+tauri-plugin-deep-link = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# PsychoJS 需要真实的 HTTP 静态服务：实验页面用系统/内置浏览器加载
+# http://127.0.0.1:port，express 在 Electron 版承担这个角色
+tiny_http = "0.12"
+mime_guess = "2"
+# sidecar 请求/响应是异步等待（前端 invoke -> Node -> 回包），
+# 用 oneshot 做 id -> 等待者的配对。Tauri 本身已带 tokio 运行时，这里只要 API。
+tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

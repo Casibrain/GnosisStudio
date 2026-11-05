@@ -64,13 +64,8 @@
 
     async function submit(evt) {
         console.log("Sending bug report:", $state.snapshot(report))
-        // send to ClickUp via HTTP
-        let resp = await fetch("/api/report", {
-            method: "POST",
-            body: JSON.stringify($state.snapshot(report))
-        }).then(
-            resp => resp.json()
-        )
+        // send to ClickUp via Tauri IPC
+        let resp = await window.python.invoke("report.submit", $state.snapshot(report))
         console.log("Bug report sent", resp)
         // catch error
         if (resp.err) {

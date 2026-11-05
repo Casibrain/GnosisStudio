@@ -78,6 +78,7 @@ await import("./files.js");
 await import("./tools/state.js");
 await import("./tools/git.js");
 await import("./python/index.js");
+await import("./tools/api_compat.js");
 
 // 通知宿主：所有 handler 已注册完毕
 process.stdout.write(JSON.stringify({

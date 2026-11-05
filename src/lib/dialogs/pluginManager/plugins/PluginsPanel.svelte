@@ -38,11 +38,7 @@
         />
     {/snippet}
 
-    {#await fetch(
-        "/api/plugins"
-    ).then(
-        resp => resp.json()
-    )}
+    {#await window.python.invoke("plugins.list")}
         {translate("Getting plugins...")}
     {:then allPlugins}
         {#each [

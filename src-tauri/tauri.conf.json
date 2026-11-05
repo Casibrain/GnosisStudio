@@ -15,11 +15,12 @@
         "label": "main",
         "title": "Gnosis Studio",
         "width": 1600,
-        "height": 900
+        "height": 900,
+        "url": "http://localhost:5173"
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self' ipc: http://ipc.localhost; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {

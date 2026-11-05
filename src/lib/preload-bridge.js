@@ -46,6 +46,7 @@ export async function installGlobals() {
     invoke: nodeCall,
     listen: listener,
     ready: nodeReady,
+    version: () => invoke("app_version"),
   };
   window.git = { invoke: nodeCall, listen: listener };
   window.python = { invoke: nodeCall, listen: listener };

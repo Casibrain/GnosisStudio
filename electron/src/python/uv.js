@@ -144,7 +144,7 @@ export class UV {
         // get current version
         let installed = this.execSync(["self", "version"])
         // check if it's the same one indicated by Studio
-        return !installed.includes(this.version)
+        return !(installed?.includes?.(this.version))
     }
 
     /**

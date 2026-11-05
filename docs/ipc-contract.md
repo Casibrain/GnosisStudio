@@ -596,7 +596,63 @@ git 事件通道      => ["git"]        ← 走 sendEvent，正常
 
 ---
 
-## 9. 迁移检查清单
+## 9. M7：PsychoJS 本地运行
+
+### 9.1 必须是真 HTTP，不能用自定义协议
+
+Electron 版用 `express.static(cwd)` 起服务，再用专用 BrowserWindow 加载
+`http://localhost:<port>?<params>`。
+
+**不要**把这条路换成 `gnosisstudio://` 自定义协议。实验页面里 psychojs 会发 XHR
+拉取资源，自定义协议的 origin 会让这些请求全部跨域失败——而且只在运行时才炸。
+
+### 9.2 实现（`src-tauri/src/system.rs`）
+
+| 项 | Electron | Tauri |
+|---|---|---|
+| 静态服务 | `express.static(cwd)` | `tiny_http` + `serve_one` |
+| 端口 | tcp-port-used 预检 → listen（有 TOCTOU 空窗） | 直接 bind，失败就 next（无竞态） |
+| 起始端口 | 8002 | 8002（实测本机 8002/8003 常被 Python 占用） |
+| 窗口 | `new BrowserWindow` + 专用菜单 | `WebviewWindowBuilder` + maximized |
+| 关闭 | `win.on("close") → server.stop()` | `WindowEvent::Destroyed → stop_psychojs` |
+
+**路径穿越防护**（`resolve_static_path`）三道：
+
+1. 拒绝任何 `..` 路径片段
+2. percent-decode 之后才判断（挡 `%2e%2e%2f`）
+3. `canonicalize()` 后必须仍在 root 内（挡符号链接逃逸）
+
+### 9.3 测试
+
+19 个测试，分三层：
+
+```
+psychojs_tests      (9)  纯函数：路径解析、query 剥离、穿越拦截、urlencode
+psychojs_port_tests (1)  端口探测跳过已占用端口
+http_e2e_tests      (5)  起真 server + 真 TCP 请求：索引页、JS MIME、
+                         query string、404、穿越 404
+```
+
+`http_e2e_tests` 是必要的：前 9 个只证明"函数返回什么"，
+不证明"网络请求真能拿到内容"（MIME、chunk、keep-alive 都可能出错）。
+
+### 9.4 已确认的前置条件
+
+`python.psychojs.run` 的调用方（`experiment.svelte.js:856`）依赖 Python 侧先跑
+`psychopy.tools.servertools:getPsychoJS` 生成 `index.html` 并把 psychojs 库下载到
+`cwd/lib/`。本机实测该函数位于
+`~/Library/Application Support/psychopy4/.psychopy/dev/psychopy-dev/psychopy/tools/servertools.py`，
+职责是**下载库文件**，不是起服务——起了服务的是 Node/Rust 这一层。
+
+### 9.5 未完成
+
+`hostRequest()`（sidecar → Rust 的反向调用）依赖 sidecar 进程管理，
+属 M8 范围。目前 `python.psychojs.run` 在纯 sidecar 下会明确报
+"host not running"，不会静默返回假地址。
+
+---
+
+## 10. 迁移检查清单
 
 每个通道迁移时必须确认：
 

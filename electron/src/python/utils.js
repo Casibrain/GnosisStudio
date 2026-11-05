@@ -24,7 +24,7 @@ export async function resolvePackageVersion(version, pipname) {
         version = appVersion
     }
     // return as is if no asterisk
-    if (!version.includes("*")) {
+    if (!version || !version.includes("*")) {
         return version
     }
     // get versions of the given package on PyPi (use cache if present)

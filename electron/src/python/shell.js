@@ -82,7 +82,7 @@ export class PythonShell {
             thusfar.message.push(safevalue)
           }
           // stop listening if end of input
-          if (value.includes(this.tokens[src].stop)) {
+          if (value?.includes?.(this.tokens[src].stop)) {
             thusfar[src] = true
             this.process[src].removeAllListeners()
           }

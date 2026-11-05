@@ -6,7 +6,7 @@ import { resolvePackageVersion } from "./utils.js";
 import { Liaison, getLiaison } from "./liaison.js";
 import { PythonShell } from "./shell.js";
 import { PythonScript } from "./script.js";
-import { PsychoJSServer, getPsychoJSServer } from "./psychojs.js";
+import { run as psychojsRun, getPsychoJSServer } from "./psychojs.js";
 
 
 // make sure all Python instances are killed on quit
@@ -68,7 +68,8 @@ export const handlers = {
         stop: handle("python.scripts.stop", async (evt, venv, id) => (await getVenv(venv)).scripts[id]?.stop())
     },
     psychojs: {
-        run: handle("python.psychojs.run", async (evt, cwd, params={}) => await PsychoJSServer.run(cwd, params)),
+        // M7：转发到 Rust 宿主（真 HTTP 静态服务 + 专用窗口）
+        run: handle("python.psychojs.run", async (evt, cwd, params={}) => await psychojsRun(cwd, params)),
         stop: handle("python.psychojs.stop", (evt, address) => getPsychoJSServer(address).stop()),
     }
 }

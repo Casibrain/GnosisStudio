@@ -662,3 +662,62 @@ http_e2e_tests      (5)  起真 server + 真 TCP 请求：索引页、JS MIME、
 - [ ] 错误路径行为一致（见 §3.1）
 - [ ] 若涉及事件广播，保留层级广播 + 全窗口广播（见 §3.3）
 - [ ] 前端调用点无需改动（除非是 D6 的同步→异步）
+
+## 11. M8：sidecar 进程管理
+
+### 11.1 架构
+
+```
+前端 invoke("node_call", { channel, params })
+   ↓
+Rust sidecar::node_call          （分配 id，写 stdin，oneshot 等待）
+   ↓ JSON-RPC over stdio
+Node sidecar.mjs                 （transport，100+ 业务通道）
+   ↓ stdout
+Rust read_loop                   （按帧类型分发）
+   ├── id 为 "host_*" 字符串 → 宿主能力（psychojs_run / auth_window）
+   ├── method == "event"         → app.emit(tag) 层级广播给前端
+   └── id 为数字                 → 对应 oneshot，resolve 给前端
+```
+
+### 11.2 关键决策
+
+**Rust 启动 Node，不是反过来。** 早期版本的 `sidecar-host.mjs` 设计成"Node 启动宿主进程"，
+在 Tauri 下完全颠倒：Rust 是宿主，sidecar 是它的子进程。sidecar 不再持有宿主句柄，
+`hostRequest()` 只是"往 stdout 写一个带 `host_` 前缀 id 的请求然后等"。
+
+**退出先关 stdin，再考虑 kill。** 窗口布局的落盘（`electron.state.updateFrame` /
+`setProfiles`）走 sidecar 的 `process.stdin.on("end") → shutdown() → saveState()`。
+直接 kill 会丢掉布局。`stop()` 先 drop stdin，最多等 2 秒让它自己退，超时才 kill。
+
+**事件按层级广播。** `a:b:c` → `a:b:c`, `a:b`, `a` 三个 tag 都 emit，
+与 transport 的 `sendEvent` 语义一致，否则前端订阅 `a:b` 收不到 `a:b:c` 的子事件。
+
+### 11.3 调试
+
+`sidecar.mjs` 的 stderr 落到 `/tmp/gnosis-sidecar.log`。
+GUI 应用下 `stderr(Stdio::inherit())` 到不了终端，出问题时这是唯一线索。
+
+### 11.4 自检
+
+`GNOSTIS_SELFCHECK=1 ./gnosis-studio` 会在 setup 完成后自己打三条通道，
+确认 `Rust → sidecar → 回包` 主干可用：
+
+```
+[selfcheck] node_call git.server = "https://gitlab.pavlovia.org"
+[selfcheck] node_call git.loadUsers = null
+[selfcheck] node_call python.uv.folder = null
+```
+
+前端要等 webview 加载 + 模块求值，中间任何一环出错都是白屏，而 Rust 侧完全看不到——
+所以自检是必要的，不是多余的。
+
+### 11.5 遗留
+
+- `gnosis://` 协议注册未实现（M9 处理文件关联时需要）
+- 打包未验证（`GNOSTIS_SIDECAR` 环境变量指向 resources 下的 sidecar.mjs）
+- 单实例未实现
+
+---
+
+## 12. 迁移检查清单

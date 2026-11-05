@@ -30,8 +30,17 @@ export function create(options = {}) {
     const handlers = new Map();
     /** @type {Set<string>} */
     const syncChannels = new Set();
+    /**
+     * 非本端发起的响应（宿主回包）的处理器。
+     * 目前只有 sidecar-host 用它接 Rust 的 host_ 响应。
+     * @type {Array<(msg: any) => boolean>}
+     */
+    const responseHooks = [];
 
     function write(obj) {
+        if (process.env.GNOSTIS_DEBUG_IPC) {
+            process.stderr.write(`[ipc] -> ${JSON.stringify(obj).slice(0, 200)}\n`);
+        }
         output.write(JSON.stringify(obj) + "\n");
     }
 
@@ -85,6 +94,14 @@ export function create(options = {}) {
                 write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
                 return;
             }
+            // 先给外部 hook 机会处理（宿主回包：id 是字符串 "host_N"，
+            // 不是本端发出的数字 id，dispatch 处理不了）
+            for (const hook of responseHooks) {
+                if (hook(msg)) return;
+            }
+            if (process.env.GNOSTIS_DEBUG_IPC) {
+                process.stderr.write(`[ipc] <- ${JSON.stringify(msg).slice(0, 200)}\n`);
+            }
             dispatch(msg);
         });
         return rl;
@@ -100,6 +117,10 @@ export function create(options = {}) {
             handlers.set(channel, fn);
         },
         sendEvent,
+        /** 注册一个响应 hook；返回 true 表示"我已处理，别再分发" */
+        onResponse(fn) {
+            responseHooks.push(fn);
+        },
         listHandlers() {
             return { handle: [...handlers.keys()], on: [...syncChannels] };
         },

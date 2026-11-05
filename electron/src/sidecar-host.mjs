@@ -1,18 +1,21 @@
 /**
  * 宿主（Rust）桥接。
  *
- * 前端只有 "前端 -> sidecar" 一条请求路。但少数事情 sidecar 自己做不了：
- * 开 OAuth 登录窗口需要真实的 BrowserWindow + cookie 管理。
+ * 架构（见 docs/ipc-contract.md §3）：
+ *   前端 invoke -> Rust node_call -> sidecar stdin
+ *   sidecar stdout -> Rust -> 前端
  *
- * 实现：hostRequest() 把请求写成普通 JSON-RPC，只是方法名以 host 开头，
- * 由 Rust 侧在 stdio 循环里拦截处理并回同一个 id。宿主进程管理（M8）
- * 落地后这条通路会被正式接管，业务代码不需要再改。
+ * 反向通路（sidecar 需要宿主能力）：
+ *   sidecar 往 stdout 写 {"id":"host_N","method":"psychojs_run",...}
+ *   Rust 识别出 host_ 前缀后自己执行，把结果写回 stdin
  *
- * 当前阶段：宿主进程尚未启动（M8 范围），调用会明确报错而不是静默失败。
+ * 所以这里 hostRequest() 只需要"写一个带 host_ 前缀的 id 的请求，然后等"。
+ * 进程管理完全在 Rust 侧，sidecar 不持有宿主进程句柄。
+ *
+ * 与 Electron 版的区别：Electron 版里 BrowserWindow 是 Node 自己的对象；
+ * 这里 sidecar 是 Rust 的子进程，拿不到 BrowserWindow，只能委托。
  */
 
-/** 宿主进程（Rust 编译出的可执行文件） */
-let host = null;
 const pending = new Map();
 let nextId = 1;
 
@@ -23,17 +26,11 @@ let nextId = 1;
  * @param {number} [timeout]
  */
 export function hostRequest(method, params = [], timeout = 180000) {
-    if (!host) {
-        throw new Error(
-            `host not running: ${method} requires the Rust host process; ` +
-            "sidecar process management lands in M8"
-        );
-    }
-
     const id = `host_${nextId++}`;
     return new Promise((resolve, reject) => {
         pending.set(id, { resolve, reject });
-        host.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        // 走 stdout：Rust 的 read_loop 会区分 host_ 前缀和普通响应
+        process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
         setTimeout(() => {
             if (pending.has(id)) {
                 pending.delete(id);
@@ -43,6 +40,15 @@ export function hostRequest(method, params = [], timeout = 180000) {
     });
 }
 
-export function stopHost() {
-    if (host) { host.kill(); host = null; }
+/**
+ * 宿主回的结果从 stdin 进来，由 transport 识别 host_ id 后回调这里。
+ * @param {string} id
+ * @param {any} result
+ * @param {Error|null} error
+ */
+export function hostRespond(id, result, error) {
+    const p = pending.get(id);
+    if (!p) return;
+    pending.delete(id);
+    error ? p.reject(new Error(error.message ?? String(error))) : p.resolve(result);
 }

@@ -195,7 +195,7 @@ fn window_url(target: Option<&str>) -> tauri::WebviewUrl {
     let mut url = if path.is_empty() {
         "index.html".to_string()
     } else {
-        format!("{path}/index.html")
+        path.to_string()
     };
     if let Some(q) = query {
         url.push('?');

@@ -15,6 +15,10 @@ use tauri::Manager;
 mod deeplink;
 mod sidecar;
 mod system;
+mod state;
+mod files;
+mod python_env;
+mod process_manager;
 
 /// 诊断用：让页面把状态回传给 Rust 打印。
 /// webview 的 console 在 GUI 应用下拿不到，这是唯一可靠的回传通道。
@@ -63,6 +67,13 @@ pub fn run() {
             let argv: Vec<String> = std::env::args().collect();
             deeplink::handle_argv(_app.handle(), &argv);
 
+            // 注册状态管理器
+            _app.manage(crate::state::StateManager::new(_app.handle()));
+            // 注册 UV 管理器
+            _app.manage(crate::python_env::UvManager::new(_app.handle()));
+            // 注册进程注册表
+            _app.manage(crate::process_manager::ProcessRegistry::new());
+
             // 启动 Node sidecar：业务逻辑（files / git / python / state）都在里面。
             // 失败不 panic —— 前端可以调 node_ready() 判断并显示"后端未就绪"，
             // 总比整个窗口打不开好。
@@ -71,12 +82,16 @@ pub fn run() {
             }
 
             // 自检：前端要等 webview 加载、模块求值，中间任何一环出错都会白屏，
+
             // 而且我们在 Rust 侧完全看不到。所以自己先打一遍全链路，
             // 确认 Rust -> sidecar -> 回包 这条主干是通的。
             if std::env::var("GNOSTIS_SELFCHECK").is_ok() {
-                tauri::async_runtime::spawn(async {
+                let app_handle = _app.handle().clone();
+                tauri::async_runtime::spawn(async move {
                     for channel in ["git.server", "git.loadUsers", "python.uv.folder"] {
-                        match sidecar::node_call(channel.into(), json!([])).await {
+                        let handle = app_handle.clone();
+                        let state = handle.state::<crate::state::StateManager>();
+                        match sidecar::node_call(handle.clone(), state, channel.into(), json!([])).await {
                             Ok(v) => println!("[selfcheck] node_call {channel} = {v}"),
                             Err(e) => println!("[selfcheck] node_call {channel} FAILED: {e}"),
                         }
@@ -173,7 +188,8 @@ pub fn run() {
         .run(|_app, event| {
             // 退出时先让 sidecar 落盘再放手（它靠 stdin 关闭触发 saveState）
             if let tauri::RunEvent::Exit = event {
-                sidecar::stop();
+                let registry = _app.state::<crate::process_manager::ProcessRegistry>();
+                sidecar::stop(&registry);
             }
         });
 }

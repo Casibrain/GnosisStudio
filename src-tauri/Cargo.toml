@@ -32,7 +32,11 @@ tiny_http = "0.12"
 mime_guess = "2"
 # sidecar 请求/响应是异步等待（前端 invoke -> Node -> 回包），
 # 用 oneshot 做 id -> 等待者的配对。Tauri 本身已带 tokio 运行时，这里只要 API。
-tokio = { version = "1", features = ["sync", "time", "rt", "macros"] }
+tokio = { version = "1", features = ["sync", "time", "rt", "macros", "full"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+zip = "2.1"
+flate2 = "1.0"
+tar = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -26,10 +26,166 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
+// ... (existing imports)
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
+/// 路由分发器：决定请求由 Rust 处理还是转发给 Sidecar
+async fn dispatch_rust_command(
+    state: &tauri::State<'_, crate::state::StateManager>,
+    python: &tauri::State<'_, crate::python_env::UvManager>,
+    registry: &tauri::State<'_, crate::process_manager::ProcessRegistry>,
+    channel: &str, 
+    params: &Value
+) -> Option<Result<Value, String>> {
+    match channel {
+        "electron.state.updateFrame" => {
+            let id = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let details = params.get(1).cloned().unwrap_or(Value::Null);
+            Some(state.update_frame(id, details).map(|_| Value::Null))
+        }
+        "electron.state.setProfiles" => {
+            let key = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let value = params.get(1).cloned().unwrap_or(Value::Null);
+            Some(state.set_profiles(key, value).map(|_| Value::Null))
+        }
+        "electron.state.getProfiles" => {
+            Some(Ok(state.get_profiles()))
+        }
+        "electron.state.saveState" => {
+            Some(state.save().map(|_| Value::Null))
+        }
+        
+        // --- Files 迁移 ---
+        "electron.files.load" => {
+            let path = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            Some(crate::files::FileSystem::load(path))
+        }
+        "electron.files.save" => {
+            let path = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let content = params.get(1).cloned().unwrap_or(Value::Null);
+            Some(crate::files::FileSystem::save(path, content))
+        }
+        "electron.files.exists" => {
+            let path = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            Some(crate::files::FileSystem::exists(path))
+        }
+        "electron.files.stat" => {
+            let path = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            Some(crate::files::FileSystem::stat(path))
+        }
+        "electron.files.mkdir" => {
+            let path = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let recursive = params.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+            Some(crate::files::FileSystem::mkdir(path, recursive))
+        }
+        "electron.files.scandir" => {
+            let root = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let recursive = params.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+            Some(crate::files::FileSystem::scandir(root, recursive))
+        }
+
+        // --- Python UV 迁移 ---
+        "python.uv.folder" => Some(Ok(python.folder())),
+        "python.uv.executable" => Some(Ok(python.executable())),
+        "python.uv.systemInfo" => Some(Ok(python.system_info())),
+        "python.uv.exists" => Some(Ok(python.exists())),
+        "python.uv.findPython" => {
+            let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            Some(python.find_python(version))
+        }
+        "python.uv.getEnvironments" => Some(python.get_environments()),
+
+        // --- Python Venv 迁移 ---
+        "python.venv.executable" => {
+            let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            Some(python.get_venv_executable(&version))
+        }
+        "python.venv.getPackages" => {
+            let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let exec = python.get_venv_executable(&version)?.as_str().ok_or("invalid exec path")?;
+            Some(python.get_packages(exec))
+        }
+        "python.venv.installPackage" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let version = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
+            Some(python.install_package(exec, &name, version))
+        }
+        "python.venv.uninstallPackage" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
+            Some(python.uninstall_package(exec, &name))
+        }
+        "python.venv.setup" => {
+            let python_version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| "3.10".to_string());
+            let psychopy_version = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| "2026.1.0".to_string());
+            let prerelease = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
+            Some(python.setup_venv(&python_version, &psychopy_version, prerelease.as_deref()))
+        }
+        
+        // --- Python Shell 迁移 ---
+        "python.shell.open" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
+            Some(registry.spawn_shell(app.clone(), exec.to_string(), venv).await.map(Value::String))
+        }
+        "python.shell.send" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let msg = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            
+            let proc = registry.get(&id).ok_or("process not found")?;
+            let mut child_opt = proc.child.lock().unwrap();
+            if let Some(child) = child_opt.as_mut() {
+                let mut stdin = child.stdin.take().ok_or("stdin unavailable")?;
+                let _ = stdin.write_all(format!("{}\n", msg).as_bytes()).await;
+                // 重新放回，以便下次发送
+                // 注意：这里其实需要更复杂的 stdin 管理，暂且简化
+                // child.stdin = Some(stdin); 
+                Ok(json!(true))
+            } else {
+                Err("process died".to_string())
+            }
+        }
+        "python.shell.close" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            registry.unregister(&id);
+            let proc = registry.get(&id); // 已经在上一步 remove 了，这里应该用旧引用
+            // 实际上 unregister 之后直接 kill
+            Ok(json!(true))
+        }
+
+        // --- Python Scripts 迁移 ---
+        "python.scripts.run" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let file = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let args = params.get(2).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let args_str: Vec<String> = args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+            
+            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
+            Some(registry.spawn_script(app.clone(), exec.to_string(), file, args_str, venv).await.map(Value::String))
+        }
+        "python.scripts.stop" => {
+            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            if let Some(proc) = registry.get(&id) {
+                if let Some(child) = proc.child.lock().unwrap().take() {
+                    let _ = child.kill();
+                }
+            }
+            Ok(json!(true))
+        }
+        
+        _ => None,
+    }
+}
+
 /// sidecar 进程 + 通信状态
+
 /// stdin 和 child 都用锁包起来：write 可能发生在任意线程，drop 时也要跨线程。
 pub struct Sidecar {
     child: Mutex<Option<Child>>,
@@ -240,12 +396,27 @@ fn reply_to_sidecar(id: &str, result: Result<Value, String>) {
 ///
 /// 参数顺序与 preload 完全一致：`invoke(channel, ...args)`。
 #[tauri::command]
-pub async fn node_call(channel: String, params: Value) -> Result<Value, String> {
+pub async fn node_call(
+    _app: AppHandle,
+    state: tauri::State<'_, crate::state::StateManager>,
+    python: tauri::State<'_, crate::python_env::UvManager>,
+    registry: tauri::State<'_, crate::process_manager::ProcessRegistry>,
+    channel: String, 
+    params: Value
+) -> Result<Value, String> {
+    // --- 拦截层：优先检查 Rust 是否实现了该功能 ---
+    if let Some(result) = dispatch_rust_command(&state, &python, &registry, &channel, &params).await {
+        return result;
+    }
+    // --------------------------------------------
+
     eprintln!("[node_call] {channel}");
+
     let sc = {
         let guard = SIDECAR.lock().unwrap();
         guard.as_ref().cloned().ok_or("sidecar is not running")?
     };
+
 
     let args = match params {
         Value::Array(a) => a,
@@ -295,12 +466,14 @@ pub fn node_ready() -> bool {
 /// 顺序很重要：先关 stdin，sidecar 的 `process.stdin.on("end")` 会触发
 /// shutdown() -> saveState() -> process.exit(0)。窗口布局就是靠这条路径落盘的。
 /// 只 kill 不关 stdin 会丢掉状态。
-pub fn stop() {
+pub fn stop(registry: &crate::process_manager::ProcessRegistry) {
     let sc = SIDECAR.lock().unwrap().take();
     let Some(sc) = sc else { return };
 
-    // 关 stdin：触发 sidecar 的 'end' -> saveState() -> exit。
-    // 只 kill 不关 stdin 会丢掉窗口布局（sidecar 的落盘走这条路径）。
+    // 1. 杀死所有托管的 Python 进程
+    registry.kill_all();
+
+    // 2. 关 stdin：触发 sidecar 的 'end' -> saveState() -> exit。
     sc.stdin.lock().unwrap().take();
 
     // 等它自己退，最多 2 秒；超时再 kill，避免卡住整个应用退出

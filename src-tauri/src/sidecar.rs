@@ -203,7 +203,8 @@ async fn dispatch_rust_command(
             let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             if let Some(proc) = registry.get(&id) {
                 if let Some(mut child) = proc.child.lock().unwrap().take() {
-                    let _ = child.kill();
+                    // start_kill 是同步版本；kill() 是 async fn，这里不能 await
+                    let _ = child.start_kill();
                 }
             }
             Some(Ok(json!(true)))
@@ -538,6 +539,9 @@ pub fn stop(registry: &crate::process_manager::ProcessRegistry) {
                 Err(_) => break,
             }
         }
+        // 这里的 Child 是 std::process::Child（sidecar 本身由标准库 spawn），
+        // 它的 kill()/wait() 都是同步方法，直接调即可 —— 与 tokio 的
+        // async kill() 不同，不要混用 start_kill。
         let _ = child.kill();
         let _ = child.wait();
     }

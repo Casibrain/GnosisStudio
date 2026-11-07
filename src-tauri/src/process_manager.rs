@@ -37,8 +37,16 @@ impl ProcessRegistry {
         self.processes.lock().unwrap().insert(id, managed);
     }
 
+    /// 摘除并结束进程。
+    ///
+    /// 必须 kill：只从 map 里 remove 会留下没人持有的子进程继续跑
+    /// （python.shell.close 用的就是这个，不 kill 就是僵尸进程）。
     pub fn unregister(&self, id: &str) {
-        self.processes.lock().unwrap().remove(id);
+        if let Some(proc) = self.processes.lock().unwrap().remove(id) {
+            if let Some(mut child) = proc.child.lock().unwrap().take() {
+                let _ = child.start_kill();
+            }
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<Arc<ManagedProcess>> {
@@ -49,7 +57,10 @@ impl ProcessRegistry {
         let mut procs = self.processes.lock().unwrap();
         for (_, proc) in procs.drain() {
             if let Some(mut child) = proc.child.lock().unwrap().take() {
-                let _ = child.kill();
+                // 必须用 start_kill：tokio 的 kill() 是 async fn，
+                // 写成 `let _ = child.kill();` 只会造出一个从不被 poll 的
+                // Future —— 进程根本不退出，退出应用时会剩一堆 Python。
+                let _ = child.start_kill();
             }
         }
     }

@@ -115,10 +115,18 @@ impl UvManager {
         }
     }
 
+    /// 查找某个 Python 版本的可执行文件（对应 uv.js:findPython）。
+    ///
+    /// 找不到时返回 null 而不是 Err：Node 版就是返回 undefined，而调用点
+    /// （functions.svelte.js:120）用假值判断"还没装"。返回 Err 会让
+    /// `.catch(handleError)` 抢先弹错误框——逻辑碰巧走得通，但"没装"被
+    /// 当成"出错了"，是错的语义。
     pub fn find_python(&self, version: String) -> Result<Value, String> {
-        // uv python find <version>
-        let res = self.run_uv(&["python", "find", &version])?;
-        Ok(json!(res))
+        match self.run_uv(&["python", "find", &version]) {
+            Ok(res) if !res.is_empty() => Ok(json!(res)),
+            // 找不到：uv 以非零退出，视作"没有"而非"错误"
+            _ => Ok(Value::Null),
+        }
     }
 
     /// 列出已有的 Python 环境（对应 uv.js:getEnvironments）。

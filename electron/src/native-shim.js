@@ -1,16 +1,14 @@
 /**
  * 原生能力 shim —— sidecar 侧的 dialog / shell 实现。
  *
- * 这些能力本质上需要系统 GUI，sidecar 是 headless 的，所以两种做法：
- *   1. 转给 Rust（Rust 有 tauri-plugin-dialog / opener）—— 最终形态
- *   2. 用 Node 尽力而为 —— 过渡形态，保证 sidecar 能独立跑通测试
+ * 这些能力需要系统 GUI，而 sidecar 是 headless 的，所以一律转给 Rust：
+ * 启动时由 sidecar.mjs 用 setNativeBridge() 注入 tauri-plugin-dialog /
+ * tauri-plugin-opener 的实现，本文件只保留形状（签名与 Electron 对齐）
+ * 和"没有宿主就显式报错"的兜底。
  *
- * 当前阶段（M3）用 2，并通过 `setNativeBridge` 预留 1 的接口。
- * M8 接 Rust 时只需在 sidecar 启动时注入 bridge，业务代码零改动。
+ * 不再保留 Node 侧的 exec 兜底：那条路径拼 shell 命令且未转义，
+ * 只在特定目录名下出错，比直接报错更难查。
  */
-
-import { exec } from "node:child_process";
-import os from "node:os";
 
 /**
  * @type {{openDialog?: Function, saveDialog?: Function, openPath?: Function,
@@ -62,42 +60,33 @@ const dialog = {
 };
 
 /**
- * shell —— 打开外部链接 / 定位文件。这些用 Node 就能做，不必转 Rust。
+ * shell —— 打开外部链接 / 定位文件。
+ *
+ * 这几个能力都需要宿主，由 tauri-plugin-opener 实现（见 sidecar.mjs）。
+ * 早先这里用 exec(`open "${target}"`) 兜底，但未转义的插值在路径含空格、
+ * 引号或 $() 时就会坏，Windows 的 `start ""` 更脆。宁可显式报错，
+ * 也不要留一条"有时能用"的路径 —— 那种 bug 只在用户的目录名带空格时出现。
  */
-function run(cmd) {
-    return new Promise((resolve, reject) => {
-        exec(cmd, err => (err ? reject(err) : resolve()));
-    });
-}
-
-/** 按平台返回"用默认程序打开"的命令 */
-function openerFor(target) {
-    if (process.platform === "darwin") return `open "${target}"`;
-    if (process.platform === "win32") return `start "" "${target}"`;
-    return `xdg-open "${target}"`;
-}
-
-/** 按平台返回"在文件管理器中显示"的命令 */
-function revealFor(target) {
-    if (process.platform === "darwin") return `open -R "${target}"`;
-    if (process.platform === "win32") return `explorer /select,"${target}"`;
-    return `xdg-open "$(dirname "${target}")"`;
-}
-
 const shell = {
     async openExternal(url) {
         if (bridge.openExternal) return bridge.openExternal(url);
-        await run(openerFor(url));
+        throw missingHost("shell.openExternal");
     },
     async openPath(target) {
         if (bridge.openPath) return bridge.openPath(target);
-        await run(openerFor(target));
+        throw missingHost("shell.openPath");
     },
     async showItemInFolder(target) {
         if (bridge.showItemInFolder) return bridge.showItemInFolder(target);
-        await run(revealFor(target));
+        throw missingHost("shell.showItemInFolder");
     },
 };
+
+function missingHost(what) {
+    return new Error(
+        `${what} needs the host (Rust) bridge; inject via setNativeBridge() at sidecar startup`
+    );
+}
 
 export { dialog, shell };
 

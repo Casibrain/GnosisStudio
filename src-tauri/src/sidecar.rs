@@ -411,6 +411,19 @@ fn handle_host_request<R: Runtime>(app: &AppHandle<R>, id: &str, msg: &Value) {
                 let options = params.first().cloned().unwrap_or(Value::Null);
                 crate::system::save_dialog(app, options).await
             }
+            // 打开外部资源。原先是 native-shim 里拼 shell 命令，未转义
+            "open_path" => {
+                let target = params.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                crate::system::open_path(app, target).await
+            }
+            "open_external" => {
+                let url = params.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                crate::system::open_external(app, url).await
+            }
+            "show_item_in_folder" => {
+                let target = params.first().and_then(|v| v.as_str()).unwrap_or("").to_string();
+                crate::system::show_item_in_folder(app, target).await
+            }
             other => Err(format!("unknownown host method: {other}")),
         };
 

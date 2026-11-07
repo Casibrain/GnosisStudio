@@ -72,6 +72,11 @@ setNativeBridge({
         hostRequest("open_dialog", [options]).then((r) => (r === null ? undefined : r)),
     saveDialog: (options) =>
         hostRequest("save_dialog", [options]).then((r) => (r === null ? undefined : r)),
+    // 打开外部资源。改用宿主（tauri-plugin-opener）而不是 exec 拼命令：
+    // 原先的 `open "${target}"` 未转义，路径含空格/引号/$() 就会坏。
+    openPath: (target) => hostRequest("open_path", [target]),
+    openExternal: (url) => hostRequest("open_external", [url]),
+    showItemInFolder: (target) => hostRequest("show_item_in_folder", [target]),
 });
 // 宿主回包：id 是 "host_N" 字符串，transport 的 dispatch 处理不了
 transport.onResponse(msg => {

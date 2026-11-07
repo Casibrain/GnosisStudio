@@ -257,6 +257,50 @@ pub async fn save_dialog<R: Runtime>(
 }
 
 // ---------------------------------------------------------------------------
+// electron.files.openPath / openExternal / showItemInFolder
+//
+// native-shim.js 的过渡实现是 exec(`open "${target}"`) —— 未转义的插值，
+// 路径里有空格、引号或 $() 就会坏掉（Windows 的 start "" 更脆）。
+// 改走 tauri-plugin-opener，由它做平台分派，不再拼 shell 字符串。
+// ---------------------------------------------------------------------------
+
+/// 用系统默认程序打开文件/目录。对应 Electron `shell.openPath`。
+pub async fn open_path<R: Runtime>(
+    app: AppHandle<R>,
+    target: String,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(&target, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::Value::Null)
+}
+
+/// 用默认浏览器打开 URL。对应 Electron `shell.openExternal`。
+pub async fn open_external<R: Runtime>(
+    app: AppHandle<R>,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(&url, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::Value::Null)
+}
+
+/// 在文件管理器中定位文件。对应 Electron `shell.showItemInFolder`。
+pub async fn show_item_in_folder<R: Runtime>(
+    app: AppHandle<R>,
+    target: String,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(&target)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::Value::Null)
+}
+
+// ---------------------------------------------------------------------------
 // electron.windows.*
 // ---------------------------------------------------------------------------
 

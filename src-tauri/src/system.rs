@@ -127,6 +127,136 @@ pub fn quit<R: Runtime>(app: AppHandle<R>) {
 }
 
 // ---------------------------------------------------------------------------
+// electron.files.openDialog / saveDialog
+//
+// sidecar 是 headless 的，原生对话框只能借宿主。返回值语义必须严格对齐
+// Electron，否则调用点会静默走错分支（前端用 `=== undefined` 判取消）：
+//   showOpenDialogSync  -> string[]  | undefined   （取消）
+//   showSaveDialogSync  -> string    | undefined   （取消）
+// 注意 tauri 的 open() 单选用 Option<PathBuf>、多选用 Option<Vec<PathBuf>>，
+// 这里统一收敛成"数组或 undefined"，由调用方按需取 [0]。
+// ---------------------------------------------------------------------------
+
+/// 把 Electron 的 filters 加到 tauri 的 FileDialogBuilder 上。
+/// tauri 的 add_filter 逐条添加（name, &[ext]），没有批量接口。
+fn apply_filters<R: Runtime>(
+    mut dlg: tauri_plugin_dialog::FileDialogBuilder<R>,
+    options: &serde_json::Value,
+) -> tauri_plugin_dialog::FileDialogBuilder<R> {
+    let Some(arr) = options.get("filters").and_then(|v| v.as_array()) else {
+        return dlg;
+    };
+    for f in arr {
+        let Some(name) = f.get("name").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let exts: Vec<String> = f
+            .get("extensions")
+            .and_then(|v| v.as_array())
+            .map(|e| {
+                e.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if exts.is_empty() {
+            continue;
+        }
+        let refs: Vec<&str> = exts.iter().map(String::as_str).collect();
+        dlg = dlg.add_filter(name, &refs);
+    }
+    dlg
+}
+
+fn dialog_title(options: &serde_json::Value) -> String {
+    options
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Electron 的 properties 数组里是否有某项
+fn has_property(options: &serde_json::Value, want: &str) -> bool {
+    options
+        .get("properties")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().any(|x| x.as_str() == Some(want)))
+        .unwrap_or(false)
+}
+
+/// 对应 Electron `dialog.showOpenDialogSync`。
+///
+/// 返回值恒为数组（Electron 的 `string[]`），取消时返回 null。
+/// 注意 `openDirectory` 分支：Electron 返回的是数组，调用点却直接当字符串
+/// 用（`path.join(folder[0], ...)` 和 `current.directory = folder` 两种都有），
+/// 所以这里坚持返回数组，与 Electron 保持一致——异形返回值会掩盖调用点的既有 bug。
+pub async fn open_dialog<R: Runtime>(
+    app: AppHandle<R>,
+    options: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut dlg = app.dialog().file().set_title(dialog_title(&options));
+    if let Some(p) = options.get("defaultPath").and_then(|v| v.as_str()) {
+        if !p.is_empty() {
+            dlg = dlg.set_directory(p);
+        }
+    }
+    dlg = apply_filters(dlg, &options);
+
+    let picked: Option<Vec<String>> = if has_property(&options, "openDirectory") {
+        let multi = has_property(&options, "multiSelections");
+        if multi {
+            dlg.blocking_pick_folders().map(|v| v.into_iter().map(|p| p.to_string()).collect())
+        } else {
+            dlg.blocking_pick_folder().map(|p| vec![p.to_string()])
+        }
+    } else if has_property(&options, "multiSelections") {
+        dlg.blocking_pick_files()
+            .map(|v| v.into_iter().map(|p| p.to_string()).collect())
+    } else {
+        dlg.blocking_pick_file().map(|p| vec![p.to_string()])
+    };
+
+    Ok(match picked {
+        Some(paths) => serde_json::json!(paths),
+        None => serde_json::Value::Null,
+    })
+}
+
+/// 对应 Electron `dialog.showSaveDialogSync`。返回字符串，取消返回 null。
+pub async fn save_dialog<R: Runtime>(
+    app: AppHandle<R>,
+    options: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let mut dlg = app.dialog().file().set_title(dialog_title(&options));
+    if let Some(p) = options.get("defaultPath").and_then(|v| v.as_str()) {
+        if !p.is_empty() {
+            // Electron 的 defaultPath 常是完整文件名，拆成目录 + 文件名
+            let path = std::path::Path::new(p);
+            match (path.parent(), path.file_name()) {
+                (Some(dir), Some(name)) if !dir.as_os_str().is_empty() => {
+                    dlg = dlg
+                        .set_directory(dir)
+                        .set_file_name(name.to_string_lossy().as_ref());
+                }
+                _ => dlg = dlg.set_directory(p),
+            }
+        }
+    }
+    dlg = apply_filters(dlg, &options);
+
+    Ok(match dlg.blocking_save_file() {
+        Some(p) => serde_json::json!(p.to_string()),
+        None => serde_json::Value::Null,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // electron.windows.*
 // ---------------------------------------------------------------------------
 

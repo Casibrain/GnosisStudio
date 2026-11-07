@@ -29,18 +29,30 @@ export function setNativeBridge(b) {
 /**
  * 同步对话框 —— Electron 的 showOpenDialogSync / showSaveDialogSync。
  *
+ * 签名必须与 Electron 一致：`(win, options)`。
+ * files.js:74 就是这么调的（`dialog.showOpenDialogSync(win, options)`），
+ * 早先只写 `(options)` 会把 win 当成 options —— title/filters/defaultPath
+ * 全部丢失，且不报错。
+ *
  * sidecar 是异步进程，真正的同步对话框只能由宿主提供。
  * 过渡期直接抛错，避免"静默返回 null 让用户以为取消了"这种更糟的失败。
  */
 const dialog = {
-    showOpenDialogSync(options) {
+    showOpenDialogSync(win, options) {
+        // 兼容只传 options 的调用（Electron 允许省略 win）
+        if (options === undefined) {
+            options = win;
+        }
         if (bridge.openDialog) return bridge.openDialog(options);
         throw new Error(
             "dialog.showOpenDialogSync requires the host (Rust) bridge; " +
             "inject via setNativeBridge() at sidecar startup"
         );
     },
-    showSaveDialogSync(options) {
+    showSaveDialogSync(win, options) {
+        if (options === undefined) {
+            options = win;
+        }
         if (bridge.saveDialog) return bridge.saveDialog(options);
         throw new Error(
             "dialog.showSaveDialogSync requires the host (Rust) bridge; " +

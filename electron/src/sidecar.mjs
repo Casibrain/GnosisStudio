@@ -65,6 +65,13 @@ const rl = transport.start();
 const { hostRequest, hostRespond } = await import("./sidecar-host.mjs");
 setNativeBridge({
     authWindow: (url, hostname) => hostRequest("auth_window", [url, hostname]),
+    // 原生对话框。Rust 侧返回 null 表示取消，这里必须**转成 undefined**：
+    // 前端用 `=== undefined` 判取消（src/lib/utils/files.js:83），
+    // 而 Electron 的 showOpenDialogSync/showSaveDialogSync 取消时正是返回 undefined。
+    openDialog: (options) =>
+        hostRequest("open_dialog", [options]).then((r) => (r === null ? undefined : r)),
+    saveDialog: (options) =>
+        hostRequest("save_dialog", [options]).then((r) => (r === null ? undefined : r)),
 });
 // 宿主回包：id 是 "host_N" 字符串，transport 的 dispatch 处理不了
 transport.onResponse(msg => {

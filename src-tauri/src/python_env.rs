@@ -4,8 +4,11 @@
 use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::fs;
+use std::fs::File;
+use std::io::copy;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
+use reqwest::blocking::Client;
 
 pub struct UvManager {
     pub root_folder: PathBuf,
@@ -169,6 +172,53 @@ impl UvManager {
         }
     }
 
+    /// Python 环境存放目录（对应 uv.js 的 pyFolder）
+    fn py_folder(&self) -> PathBuf {
+        self.root_folder.join(".python")
+    }
+
+    /// 取某个 PsychoPy 版本 venv 里的 Python 可执行文件路径。
+    ///
+    /// 与 Node 版 uv.js:findPython 等价：先问 uv，退回按平台约定拼路径。
+    /// 返回 `Result` 而不是 `Option`：路径不存在时要能报出"哪个版本缺环境"，
+    /// 静默返回 null 会让前端以为用户没装过。
+    pub fn get_venv_executable(&self, version: &str) -> Result<Value, String> {
+        let folder = self.py_folder().join(version);
+        if let Ok(found) = self.run_uv(&["python", "find", &folder.to_string_lossy()]) {
+            if !found.is_empty() {
+                return Ok(json!(found));
+            }
+        }
+        // uv 没找到时按 venv 布局猜：Windows 在 Scripts/ 下，其余在 bin/ 下
+        let exe = if cfg!(target_os = "windows") {
+            folder.join("Scripts").join("python.exe")
+        } else {
+            folder.join("bin").join("python")
+        };
+        if exe.exists() {
+            Ok(json!(exe.to_string_lossy()))
+        } else {
+            Err(format!("no python environment found for version {version}"))
+        }
+    }
+
+    /// 列出 venv 里已安装的包（对应 venv.js:getPackages）。
+    ///
+    /// 返回 `{包名: 版本}` 对象，与 Node 版形状一致——前端直接用 `in` 判断。
+    pub fn get_packages(&self, executable: &str) -> Result<Value, String> {
+        let res = self.run_uv(&["pip", "list", "--python", executable, "--format", "json"])?;
+        let parsed: Vec<Value> = serde_json::from_str(&res)
+            .map_err(|e| format!("failed to parse pip list output: {e}"))?;
+
+        let mut out = serde_json::Map::new();
+        for pkg in parsed {
+            if let (Some(name), Some(version)) = (pkg.get("name").and_then(|v| v.as_str()), pkg.get("version")) {
+                out.insert(name.to_string(), version.clone());
+            }
+        }
+        Ok(Value::Object(out))
+    }
+
     /// 完整初始化虚拟环境 (迁移自 venv.js:setup)
     pub fn setup_venv(&self, python_version: &str, psychopy_version: &str, prerelease: Option<&str>) -> Result<Value, String> {
         let executable = self.find_python(python_version.to_string())?.as_str().ok_or("failed to find python executable")?.to_string();
@@ -185,19 +235,18 @@ impl UvManager {
         }
 
         let (source, module_name) = if psychopy_version == "dev" || prerelease == Some("dev") {
-            ("https://github.com/psychopy/psychopy/archive/refs/heads/dev.zip", "psychopy-dev")
+            ("https://github.com/psychopy/psychopy/archive/refs/heads/dev.zip".to_string(), "psychopy-dev")
         } else if prerelease == Some("release") {
-            ("https://github.com/psychopy/psychopy/archive/refs/heads/release.zip", "psychopy-release")
+            ("https://github.com/psychopy/psychopy/archive/refs/heads/release.zip".to_string(), "psychopy-release")
         } else {
             let pkg = if psychopy_version.starts_with("2026") { "psychopy" } else { "psychopy-lib" };
-            let url = format!("https://github.com/psychopy/{}/archive/refs/tags/{}.zip", pkg, psychopy_version);
-            (url.as_str(), "psychopy-lib")
+            (format!("https://github.com/psychopy/{}/archive/refs/tags/{}.zip", pkg, psychopy_version), "psychopy-lib")
         };
 
         let ppy_folder = self.root_folder.join(".psychopy").join(psychopy_version);
         fs::create_dir_all(&ppy_folder).map_err(|e| e.to_string())?;
 
-        self.download_folder(source, &ppy_folder, Some(module_name))?;
+        self.download_folder(&source, &ppy_folder, Some(module_name))?;
 
         let module_folder = ppy_folder.join(module_name);
         self.sync_project(&executable, &module_folder)?;
@@ -208,7 +257,7 @@ impl UvManager {
     /// 下载并解压资源文件夹 (迁移自 files.js:downloadFolder)
     pub fn download_folder(&self, url: &str, target: &Path, name: Option<&str>) -> Result<(), String> {
         let client = Client::new();
-        let mut response = client.get(url).send().map_err(|e| e.to_string())?;
+        let response = client.get(url).send().map_err(|e| e.to_string())?;
         
         if !response.status().is_success() {
             return Err(format!("download failed: {}", response.status()));
@@ -227,7 +276,11 @@ impl UvManager {
         let extract_path = target.join(name.unwrap_or("extracted"));
         for i in 0..archive.len() {
             let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
-            let outpath = extract_path.join(file.m_name());
+            // enclosed_name 会剔除 `..` 等越界路径，避免 zip slip
+            let entry_name = file
+                .enclosed_name()
+                .ok_or_else(|| format!("unsafe path in zip: {}", file.name()))?;
+            let outpath = extract_path.join(entry_name);
             if file.is_dir() {
                 fs::create_dir_all(&outpath).map_err(|e| e.to_string())?;
             } else {

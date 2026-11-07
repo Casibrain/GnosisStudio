@@ -39,6 +39,7 @@ pub fn run() {
             deeplink::handle_argv(app, &argv);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         // psychopy-studio:// 深链。macOS 走 open-url，其余平台走第二实例的 argv。
         .plugin(tauri_plugin_deep_link::init())
         // 菜单点击：把菜单项 id 变成 `menu:<id>` 事件发回前端
@@ -91,7 +92,9 @@ pub fn run() {
                     for channel in ["git.server", "git.loadUsers", "python.uv.folder"] {
                         let handle = app_handle.clone();
                         let state = handle.state::<crate::state::StateManager>();
-                        match sidecar::node_call(handle.clone(), state, channel.into(), json!([])).await {
+                        let python = handle.state::<crate::python_env::UvManager>();
+                        let registry = handle.state::<crate::process_manager::ProcessRegistry>();
+                        match sidecar::node_call(handle.clone(), state, python, registry, channel.into(), json!([])).await {
                             Ok(v) => println!("[selfcheck] node_call {channel} = {v}"),
                             Err(e) => println!("[selfcheck] node_call {channel} FAILED: {e}"),
                         }

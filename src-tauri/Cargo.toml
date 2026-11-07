@@ -20,6 +20,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# 原生文件对话框：sidecar 是 headless 的，openDialog/saveDialog 必须借宿主能力
+tauri-plugin-dialog = "2"
 # 单实例：第二实例的 argv 交给第一个实例（Electron 的 requestSingleInstanceLock 对应物）
 tauri-plugin-single-instance = "2"
 # psychopy-studio:// 深链（open-url）。macOS 走 kAEGetURL，Linux/Windows 走 argv
@@ -33,10 +35,12 @@ mime_guess = "2"
 # sidecar 请求/响应是异步等待（前端 invoke -> Node -> 回包），
 # 用 oneshot 做 id -> 等待者的配对。Tauri 本身已带 tokio 运行时，这里只要 API。
 tokio = { version = "1", features = ["sync", "time", "rt", "macros", "full"] }
-reqwest = { version = "0.12", features = ["json", "stream"] }
+# blocking：download_folder 是同步解压流程，放异步里会把 tokio worker 卡住
+reqwest = { version = "0.12", features = ["json", "stream", "blocking"] }
 zip = "2.1"
 flate2 = "1.0"
 tar = "0.4"
+uuid = { version = "1", features = ["v4"] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

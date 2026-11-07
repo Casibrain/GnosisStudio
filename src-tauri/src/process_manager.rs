@@ -3,10 +3,10 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::io::{AsyncWriteExt, AsyncBufReadExt, BufReader};
-use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager};
+use serde_json::json;
+use tauri::{AppHandle, Emitter};
 use std::process::Stdio;
 
 /// Python 进程的统一包装
@@ -48,7 +48,7 @@ impl ProcessRegistry {
     pub fn kill_all(&self) {
         let mut procs = self.processes.lock().unwrap();
         for (_, proc) in procs.drain() {
-            if let Some(child) = proc.child.lock().unwrap().take() {
+            if let Some(mut child) = proc.child.lock().unwrap().take() {
                 let _ = child.kill();
             }
         }
@@ -114,7 +114,7 @@ impl ProcessRegistry {
             .map_err(|e| format!("failed to spawn python script: {e}"))?;
 
         let stdout = child.stdout.take().ok_or("stdout not available")?;
-        let stderr = child.stderr.take().ok_//error not available")?;
+        let stderr = child.stderr.take().ok_or("stderr not available")?;
 
         self.register(id.clone(), child, venv);
 

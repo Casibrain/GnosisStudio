@@ -91,6 +91,10 @@
     version: function () {
       return call("app_version");
     },
+    quit: function () {
+      // Electron 里是 app.quit()；Tauri 侧退出整个应用
+      return call("quit");
+    },
     windows: {
       new: function (target) { return call("windows_new", { target: target }); },
       get: function (target) { return call("windows_get", { target: target }); },
@@ -138,8 +142,10 @@
     },
     state: {
       updateFrame: function (frame) { return nodeCall("electron.state.updateFrame", frame); },
-      setProfiles: function (p) { return nodeCall("electron.state.setProfiles", p); },
-      getProfiles: function () { return nodeCall("electron.state.getProfiles"); }
+      // 两个位置参数：前端是 setProfiles(key, data)，少传一个 sidecar 就收不到值
+      setProfiles: function (key, data) { return nodeCall("electron.state.setProfiles", key, data); },
+      getProfiles: function () { return nodeCall("electron.state.getProfiles"); },
+      saveState: function () { return nodeCall("electron.state.saveState"); }
     },
     system: {
       requestKeyboardAccess: function () { return call("system_request_keyboard_access"); },

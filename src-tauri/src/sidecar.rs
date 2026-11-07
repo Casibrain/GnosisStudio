@@ -23,6 +23,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use tokio::io::AsyncWriteExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{Arc, Mutex};
 
@@ -31,11 +32,16 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// 路由分发器：决定请求由 Rust 处理还是转发给 Sidecar
+///
+/// 返回 `None` 表示「Rust 不管这个 channel」→ 调用方转发给 sidecar。
+/// 返回 `Some(Err(..))` 表示「Rust 认领了但执行失败」——这类错误**不能**再
+/// 转发给 sidecar 兜底，否则参数错误会变成 Node 侧的另一套错误信息。
 async fn dispatch_rust_command(
+    app: &AppHandle,
     state: &tauri::State<'_, crate::state::StateManager>,
     python: &tauri::State<'_, crate::python_env::UvManager>,
     registry: &tauri::State<'_, crate::process_manager::ProcessRegistry>,
-    channel: &str, 
+    channel: &str,
     params: &Value
 ) -> Option<Result<Value, String>> {
     match channel {
@@ -103,21 +109,27 @@ async fn dispatch_rust_command(
         }
         "python.venv.getPackages" => {
             let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            let exec = python.get_venv_executable(&version)?.as_str().ok_or("invalid exec path")?;
-            Some(python.get_packages(exec))
+            Some(python.get_venv_executable(&version).and_then(|v| {
+                let exec = v.as_str().ok_or("invalid exec path")?.to_string();
+                python.get_packages(&exec)
+            }))
         }
         "python.venv.installPackage" => {
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let version = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
-            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
-            Some(python.install_package(exec, &name, version))
+            Some(python.get_venv_executable(&venv).and_then(|v| {
+                let exec = v.as_str().ok_or("invalid exec path")?;
+                python.install_package(exec, &name, version)
+            }))
         }
         "python.venv.uninstallPackage" => {
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
-            Some(python.uninstall_package(exec, &name))
+            Some(python.get_venv_executable(&venv).and_then(|v| {
+                let exec = v.as_str().ok_or("invalid exec path")?;
+                python.uninstall_package(exec, &name)
+            }))
         }
         "python.venv.setup" => {
             let python_version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_else(|| "3.10".to_string());
@@ -129,34 +141,47 @@ async fn dispatch_rust_command(
         // --- Python Shell 迁移 ---
         "python.shell.open" => {
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
-            Some(registry.spawn_shell(app.clone(), exec.to_string(), venv).await.map(Value::String))
+            Some(match python.get_venv_executable(&venv) {
+                Ok(v) => match v.as_str() {
+                    Some(exec) => registry.spawn_shell(app.clone(), exec.to_string(), venv).await.map(Value::String),
+                    None => Err("invalid exec path".to_string()),
+                },
+                Err(e) => Err(e),
+            })
         }
         "python.shell.send" => {
-            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let msg = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            
-            let proc = registry.get(&id).ok_or("process not found")?;
-            let mut child_opt = proc.child.lock().unwrap();
-            if let Some(child) = child_opt.as_mut() {
-                let mut stdin = child.stdin.take().ok_or("stdin unavailable")?;
-                let _ = stdin.write_all(format!("{}\n", msg).as_bytes()).await;
-                // 重新放回，以便下次发送
-                // 注意：这里其实需要更复杂的 stdin 管理，暂且简化
-                // child.stdin = Some(stdin); 
-                Ok(json!(true))
-            } else {
-                Err("process died".to_string())
+
+            // 先在不持锁的情况下把 stdin 取出来：std MutexGuard 不能跨 await 存活
+            let mut stdin = match registry.get(&id) {
+                None => return Some(Err(format!("process not found: {id}"))),
+                Some(proc) => {
+                    let mut child_opt = proc.child.lock().unwrap();
+                    match child_opt.as_mut() {
+                        Some(child) => match child.stdin.take() {
+                            Some(s) => s,
+                            None => return Some(Err("stdin unavailable".to_string())),
+                        },
+                        None => return Some(Err("process died".to_string())),
+                    }
+                }
+            };
+
+            let res = stdin.write_all(format!("{msg}\n").as_bytes()).await;
+            // 无论写成功与否都放回，否则后续 send 全废
+            if let Some(proc) = registry.get(&id) {
+                if let Some(child) = proc.child.lock().unwrap().as_mut() {
+                    child.stdin = Some(stdin);
+                }
             }
+            Some(res.map(|_| json!(true)).map_err(|e| e.to_string()))
         }
         "python.shell.close" => {
-            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
+            // unregister 返回的是已摘下的进程，顺手 kill 掉
             registry.unregister(&id);
-            let proc = registry.get(&id); // 已经在上一步 remove 了，这里应该用旧引用
-            // 实际上 unregister 之后直接 kill
-            Ok(json!(true))
+            Some(Ok(json!(true)))
         }
 
         // --- Python Scripts 迁移 ---
@@ -165,19 +190,23 @@ async fn dispatch_rust_command(
             let file = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let args = params.get(2).and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let args_str: Vec<String> = args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
-            
-            let exec = python.get_venv_executable(&venv).as_str().ok_or("invalid exec path")?;
-            Some(registry.spawn_script(app.clone(), exec.to_string(), file, args_str, venv).await.map(Value::String))
+
+            Some(match python.get_venv_executable(&venv) {
+                Ok(v) => match v.as_str() {
+                    Some(exec) => registry.spawn_script(app.clone(), exec.to_string(), file, args_str, venv).await.map(Value::String),
+                    None => Err("invalid exec path".to_string()),
+                },
+                Err(e) => Err(e),
+            })
         }
         "python.scripts.stop" => {
-            let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let id = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             if let Some(proc) = registry.get(&id) {
-                if let Some(child) = proc.child.lock().unwrap().take() {
+                if let Some(mut child) = proc.child.lock().unwrap().take() {
                     let _ = child.kill();
                 }
             }
-            Ok(json!(true))
+            Some(Ok(json!(true)))
         }
         
         _ => None,
@@ -372,6 +401,16 @@ fn handle_host_request<R: Runtime>(app: &AppHandle<R>, id: &str, msg: &Value) {
                 let host = params.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
                 crate::system::auth_window(app, url, host).await.map(Value::String)
             }
+            // 原生对话框：sidecar 是 headless 的，只能借宿主能力。
+            // 返回 null 表示用户取消，JS 侧再由 native-shim 转成 undefined。
+            "open_dialog" => {
+                let options = params.first().cloned().unwrap_or(Value::Null);
+                crate::system::open_dialog(app, options).await
+            }
+            "save_dialog" => {
+                let options = params.first().cloned().unwrap_or(Value::Null);
+                crate::system::save_dialog(app, options).await
+            }
             other => Err(format!("unknownown host method: {other}")),
         };
 
@@ -397,15 +436,15 @@ fn reply_to_sidecar(id: &str, result: Result<Value, String>) {
 /// 参数顺序与 preload 完全一致：`invoke(channel, ...args)`。
 #[tauri::command]
 pub async fn node_call(
-    _app: AppHandle,
+    app: AppHandle,
     state: tauri::State<'_, crate::state::StateManager>,
     python: tauri::State<'_, crate::python_env::UvManager>,
     registry: tauri::State<'_, crate::process_manager::ProcessRegistry>,
-    channel: String, 
+    channel: String,
     params: Value
 ) -> Result<Value, String> {
     // --- 拦截层：优先检查 Rust 是否实现了该功能 ---
-    if let Some(result) = dispatch_rust_command(&state, &python, &registry, &channel, &params).await {
+    if let Some(result) = dispatch_rust_command(&app, &state, &python, &registry, &channel, &params).await {
         return result;
     }
     // --------------------------------------------

@@ -25,15 +25,19 @@ export function setNativeBridge(b) {
 }
 
 /**
- * 同步对话框 —— Electron 的 showOpenDialogSync / showSaveDialogSync。
+ * 对话框 —— 对应 Electron 的 showOpenDialogSync / showSaveDialogSync。
  *
  * 签名必须与 Electron 一致：`(win, options)`。
  * files.js:74 就是这么调的（`dialog.showOpenDialogSync(win, options)`），
  * 早先只写 `(options)` 会把 win 当成 options —— title/filters/defaultPath
  * 全部丢失，且不报错。
  *
- * sidecar 是异步进程，真正的同步对话框只能由宿主提供。
- * 过渡期直接抛错，避免"静默返回 null 让用户以为取消了"这种更糟的失败。
+ * 注意 **返回的是 Promise，不是同步值**。名字里的 Sync 只是为了与 Electron
+ * 的调用形状对齐。这能成立是因为唯一的调用链是
+ *   files.js:265 handle(...) -> transport/jsonrpc.js:73 `await fn(...)`
+ * 中间没有任何地方把它当同步值用。若将来出现同步调用点（如 Electron 下
+ * 直接调 files.js 的 openDialog），必须改成 await —— 否则拿到的是 Promise
+ * 对象，真值判断恒为真，用户取消反而会被当成选了路径。
  */
 const dialog = {
     showOpenDialogSync(win, options) {

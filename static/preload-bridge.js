@@ -128,8 +128,15 @@
       exists: function (f) { return nodeCall("electron.files.exists", f); },
       stat: function (f) { return nodeCall("electron.files.stat", f); },
       mkdir: function (f) { return nodeCall("electron.files.mkdir", f); },
-      openDialog: function (o) { return nodeCall("electron.files.openDialog", o); },
-      saveDialog: function (o) { return nodeCall("electron.files.saveDialog", o); },
+      // 取消对话框时 Electron 返回 undefined，前端就是这么判断的
+      // （src/lib/utils/files.js:83/133 等处 `=== undefined`）。
+      // 但 undefined 过不了 JSON：sidecar 的 dispatch 写 result 时会变成 null
+      // （transport/jsonrpc.js:74 `result ?? null`），到这里已经区分不出
+      // "取消" 和 "真的返回了个 null"。所以在桥接层归一化回 undefined ——
+      // 前端拿到的形状必须和 Electron 一致，否则取消会被当成选了文件，
+      // 随后 files.map 直接崩。
+      openDialog: function (o) { return nodeCall("electron.files.openDialog", o).then(function (r) { return r === null ? undefined : r; }); },
+      saveDialog: function (o) { return nodeCall("electron.files.saveDialog", o).then(function (r) { return r === null ? undefined : r; }); },
       scandir: function (d) { return nodeCall("electron.files.scandir", d); },
       showItemInFolder: function (f) { return nodeCall("electron.files.showItemInFolder", f); },
       openPath: function (p) { return nodeCall("electron.files.openPath", p); },

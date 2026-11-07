@@ -10,6 +10,35 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use reqwest::blocking::Client;
 
+/// `normalize_version` 的纯逻辑部分，做成自由函数以便单测
+/// （AppHandle 造不出来，但版本解析正是最容易出错、也最该锁住的部分）。
+///
+/// app_version 只在标识为 `"app"` / 空时用到。
+pub fn normalize_version(version: &str, app_version: &str) -> String {
+    if version.is_empty() || version == "app" {
+        return app_version.to_string();
+    }
+    // 对应 Node 的 version.match(/\d+\.\d+\.\d+/)[0]：
+    // 按"非版本字符"切段，找回第一段形如 x.y.z 的前三段数字
+    for chunk in version.split(|c: char| !c.is_ascii_digit() && c != '.') {
+        let parts: Vec<&str> = chunk.split('.').filter(|s| !s.is_empty()).collect();
+        if parts.len() >= 3 && parts[..3].iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
+            return parts[..3].join(".");
+        }
+    }
+    version.to_string()
+}
+
+/// 目录名是否形如 "3.10" / "2024.1"（两段数字）。
+/// Node 版用 /^\d+\.\d+$/ 判断，命中就还原成 "x.y.*" 形式。
+fn is_two_part_version(name: &str) -> bool {
+    let parts: Vec<&str> = name.split('.').collect();
+    parts.len() == 2
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub struct UvManager {
     pub root_folder: PathBuf,
     pub executable: String,
@@ -92,10 +121,78 @@ impl UvManager {
         Ok(json!(res))
     }
 
+    /// 列出已有的 Python 环境（对应 uv.js:getEnvironments）。
+    ///
+    /// 必须返回对象数组 `[{executable, psychopyVersion, pythonVersion}]`：
+    /// VenvChooser.svelte 遍历时直接读 `env.psychopyVersion` / `env.executable`。
+    /// 早先这里把 `uv python list` 的原始文本 json! 出去，前端拿到的全是
+    /// undefined —— 下拉框永远空着，且不报错。
+    ///
+    /// 扫描方式也与 Node 版一致：扫 pyFolder 的子目录逐个确认有没有 python。
+    /// 不用 `uv python list`，它列的是 uv 自己的解释器缓存，不是我们的 venv。
     pub fn get_environments(&self) -> Result<Value, String> {
-        // uv python list
-        let res = self.run_uv(&["python", "list"])?;
-        Ok(json!(res))
+        let py_folder = self.py_folder();
+        let mut out: Vec<Value> = Vec::new();
+
+        // 没有目录就是没有环境，不是错误
+        let Ok(entries) = fs::read_dir(&py_folder) else {
+            return Ok(json!(out));
+        };
+
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+                continue;
+            };
+            // 目录名 2024.1 -> 版本 2024.1.*（Node 版同样 "reinstate .* syntax"）
+            let psychopy_version = if is_two_part_version(&name) {
+                format!("{name}.*")
+            } else {
+                name.clone()
+            };
+
+            let folder = entry.path();
+            let Ok(found) = self.run_uv(&["python", "find", &folder.to_string_lossy()]) else {
+                continue;
+            };
+            if found.is_empty() {
+                continue;
+            }
+
+            // python --version 输出 "Python 3.10.x"
+            let python_version = Command::new(&found)
+                .arg("--version")
+                .output()
+                .ok()
+                .and_then(|o| {
+                    let text = if o.stdout.is_empty() {
+                        String::from_utf8_lossy(&o.stderr).to_string()
+                    } else {
+                        String::from_utf8_lossy(&o.stdout).to_string()
+                    };
+                    text.split_whitespace()
+                        .find(|w| w.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
+                        .map(|w| {
+                            let parts: Vec<&str> = w.split('.').collect();
+                            if parts.len() >= 2 {
+                                format!("{}.{}", parts[0], parts[1])
+                            } else {
+                                w.to_string()
+                            }
+                        })
+                })
+                .unwrap_or_default();
+
+            out.push(json!({
+                "executable": found,
+                "psychopyVersion": psychopy_version,
+                "pythonVersion": python_version,
+            }));
+        }
+
+        Ok(json!(out))
     }
 
     pub fn install(&self) -> Result<Value, String> {
@@ -177,13 +274,28 @@ impl UvManager {
         self.root_folder.join(".python")
     }
 
-    /// 取某个 PsychoPy 版本 venv 里的 Python 可执行文件路径。
+    /// 把前端传来的版本标识规范成真实目录名。
     ///
-    /// 与 Node 版 uv.js:findPython 等价：先问 uv，退回按平台约定拼路径。
-    /// 返回 `Result` 而不是 `Option`：路径不存在时要能报出"哪个版本缺环境"，
-    /// 静默返回 null 会让前端以为用户没装过。
-    pub fn get_venv_executable(&self, version: &str) -> Result<Value, String> {
-        let folder = self.py_folder().join(version);
+    /// 对应 uv.js:getVenv 里的两步（resolvePackageVersion + 剥离 extras）：
+    ///   1. `"app"` / 空 -> 当前 app 版本。前端 VenvChooser.svelte:9 传的就是 "app"，
+    ///      不替换会拼成 `.python/app` 而永远找不到
+    ///   2. 含 extras 的字符串（如 `"2024.1.0.dev1+abc"`）-> 取前三段数字。
+    ///      目录名是 `2024.1.0`，带 extras 会拼错
+    ///
+    /// 通配符（`2024.1.*`）不在这里解析：那要联网查 PyPI，由 Node 侧
+    /// resolvePackageVersion 先处理，Rust 只接已解析的值。
+    fn normalize_version(&self, app: &AppHandle, version: &str) -> String {
+        normalize_version(version, &app.package_info().version.to_string())
+    }
+
+    /// 取某个 PsychoPy 版本 venv 里的 Python 可执行文件路径。
+    pub fn get_venv_executable_ctx(
+        &self,
+        app: &AppHandle,
+        version: &str,
+    ) -> Result<Value, String> {
+        let version = self.normalize_version(app, version);
+        let folder = self.py_folder().join(&version);
         if let Ok(found) = self.run_uv(&["python", "find", &folder.to_string_lossy()]) {
             if !found.is_empty() {
                 return Ok(json!(found));
@@ -202,6 +314,7 @@ impl UvManager {
         }
     }
 
+    ///
     /// 列出 venv 里已安装的包（对应 venv.js:getPackages）。
     ///
     /// 返回 `{包名: 版本}` 对象，与 Node 版形状一致——前端直接用 `in` 判断。
@@ -294,5 +407,48 @@ impl UvManager {
 
         fs::remove_file(zip_path).ok();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 前端 VenvChooser.svelte:9 传 "app"。Node 版把 "app" 换成真实版本，
+    /// Rust 版若直接用它拼目录，会去找 `.python/app` —— 用户所有环境"消失"。
+    #[test]
+    fn app_keyword_resolves_to_app_version() {
+        assert_eq!(normalize_version("app", "2024.1.0"), "2024.1.0");
+        assert_eq!(normalize_version("", "2024.1.0"), "2024.1.0");
+    }
+
+    /// getVenv 会剥离 extras：目录名是 2024.1.0，不是 2024.1.0.dev1+abc
+    #[test]
+    fn extras_are_stripped_to_three_parts() {
+        assert_eq!(normalize_version("2024.1.0.dev1+abc", "x"), "2024.1.0");
+        assert_eq!(normalize_version("v2024.1.0", "x"), "2024.1.0");
+    }
+
+    /// 已经是干净版本号时原样返回（不能把 2024.1.0 弄成 2024.1）
+    #[test]
+    fn clean_versions_pass_through() {
+        assert_eq!(normalize_version("2024.1.0", "x"), "2024.1.0");
+        assert_eq!(normalize_version("2023.2.3", "x"), "2023.2.3");
+    }
+
+    /// 两段数字（如 "3.10"）不该被当作三段版本截断
+    #[test]
+    fn two_part_versions_are_not_truncated() {
+        assert_eq!(normalize_version("3.10", "x"), "3.10");
+    }
+
+    /// 目录名 2024.1 要还原成 2024.1.*，与 Node 的 "reinstate .* syntax" 一致
+    #[test]
+    fn two_part_folder_names_get_star_suffix() {
+        assert!(is_two_part_version("2024.1"));
+        assert!(is_two_part_version("3.10"));
+        assert!(!is_two_part_version("2024.1.0"));
+        assert!(!is_two_part_version("app"));
+        assert!(!is_two_part_version("2024..1"));
     }
 }

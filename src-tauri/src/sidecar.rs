@@ -105,11 +105,11 @@ async fn dispatch_rust_command(
         // --- Python Venv 迁移 ---
         "python.venv.executable" => {
             let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            Some(python.get_venv_executable(&version))
+            Some(python.get_venv_executable_ctx(app, &version))
         }
         "python.venv.getPackages" => {
             let version = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            Some(python.get_venv_executable(&version).and_then(|v| {
+            Some(python.get_venv_executable_ctx(app, &version).and_then(|v| {
                 let exec = v.as_str().ok_or("invalid exec path")?.to_string();
                 python.get_packages(&exec)
             }))
@@ -118,7 +118,7 @@ async fn dispatch_rust_command(
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let version = params.get(2).and_then(|v| v.as_str()).map(|s| s.to_string());
-            Some(python.get_venv_executable(&venv).and_then(|v| {
+            Some(python.get_venv_executable_ctx(app, &venv).and_then(|v| {
                 let exec = v.as_str().ok_or("invalid exec path")?;
                 python.install_package(exec, &name, version)
             }))
@@ -126,7 +126,7 @@ async fn dispatch_rust_command(
         "python.venv.uninstallPackage" => {
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
             let name = params.get(1).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            Some(python.get_venv_executable(&venv).and_then(|v| {
+            Some(python.get_venv_executable_ctx(app, &venv).and_then(|v| {
                 let exec = v.as_str().ok_or("invalid exec path")?;
                 python.uninstall_package(exec, &name)
             }))
@@ -141,7 +141,7 @@ async fn dispatch_rust_command(
         // --- Python Shell 迁移 ---
         "python.shell.open" => {
             let venv = params.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            Some(match python.get_venv_executable(&venv) {
+            Some(match python.get_venv_executable_ctx(app, &venv) {
                 Ok(v) => match v.as_str() {
                     Some(exec) => registry.spawn_shell(app.clone(), exec.to_string(), venv).await.map(Value::String),
                     None => Err("invalid exec path".to_string()),
@@ -191,7 +191,7 @@ async fn dispatch_rust_command(
             let args = params.get(2).and_then(|v| v.as_array()).cloned().unwrap_or_default();
             let args_str: Vec<String> = args.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
 
-            Some(match python.get_venv_executable(&venv) {
+            Some(match python.get_venv_executable_ctx(app, &venv) {
                 Ok(v) => match v.as_str() {
                     Some(exec) => registry.spawn_script(app.clone(), exec.to_string(), file, args_str, venv).await.map(Value::String),
                     None => Err("invalid exec path".to_string()),

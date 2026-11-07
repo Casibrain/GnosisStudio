@@ -1230,19 +1230,25 @@ mod window_target_tests {
 
     #[test]
     fn plain_target_becomes_directory_index() {
-        // 预渲染产出 dist/builder/index.html
+        // 预渲染产出 dist/builder/index.html，但这里不该自己补 "index.html"。
+        // Tauri 的 get_asset 会依次回退 {path} -> {path}.html -> {path}/index.html
+        // （registry tauri-2.12.5/src/manager/mod.rs:395-406），所以 "builder"
+        // 会被解析到 builder/index.html。
+        // 反过来，硬拼 "builder/index.html" 会让前端路由拿到带后缀的路径，
+        // 与 trailingSlash='always' 的 SvelteKit 路由对不上（8803b00 修的就是这个）。
         match window_url(Some("builder")) {
-            tauri::WebviewUrl::App(p) => assert_eq!(p.display().to_string(), "builder/index.html"),
+            tauri::WebviewUrl::App(p) => assert_eq!(p.display().to_string(), "builder"),
             _ => panic!("expected App url"),
         }
     }
 
     #[test]
-    fn query_is_appended_after_index_html_not_swallowed_by_the_path() {
+    fn query_is_appended_after_the_path_not_swallowed_by_it() {
         // 回归：早先把 target 整体当路径，拼出
         // "builder?fileOpen=x/index.html" —— 窗口直接白屏，且 label 非法。
+        // query 必须始终排在路径之后。
         match window_url(Some("builder?fileOpen=/tmp/a.psyexp")) {
-            tauri::WebviewUrl::App(p) => assert_eq!(p.display().to_string(), "builder/index.html?fileOpen=/tmp/a.psyexp"),
+            tauri::WebviewUrl::App(p) => assert_eq!(p.display().to_string(), "builder?fileOpen=/tmp/a.psyexp"),
             _ => panic!("expected App url"),
         }
     }

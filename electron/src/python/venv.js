@@ -454,10 +454,10 @@ export async function getVenv(version) {
     // resolve any asterisk in the version number
     version = await resolvePackageVersion(version, "psychopy")
     // strip extras from version
-    if (version.match(/\d+\.\d+\.\d+/)) {
+    if (version && typeof version === "string" && version.match(/\d+\.\d+\.\d+/)) {
         version = version.match(/\d+\.\d+\.\d+/)[0]
     }
-    
+
     if (version in venvs) {
         // if made, return it
         return venvs[version]

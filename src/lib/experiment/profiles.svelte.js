@@ -118,7 +118,16 @@ export async function refresh(key, timeout=undefined, force=false) {
 // 原先这里用同步 IPC（ipcRenderer.sendSync）在模块顶层取值。Tauri 侧没有同步
 // invoke，getProfiles 改成了异步（D6）。顶层 await 在 ESM/SvelteKit 下可用，
 // 且这一步只是读一个本地 JSON 缓存，不阻塞渲染路径上的关键请求。
-const cachedProfiles = ( electron ? await electron.state.getProfiles() : null ) || {}
+let cachedProfiles = {};
+try {
+    const bridgeElectron = window.electron;
+    if (bridgeElectron) {
+        cachedProfiles = await bridgeElectron.state.getProfiles() || {};
+    }
+} catch (e) {
+    console.error("[Profiles] Failed to load cached profiles from bridge:", e);
+}
+
 for (let [key, value] of Object.entries(cachedProfiles)) {
     if (profiles[key]?.getter && value) {
         profiles[key].value = value
@@ -128,10 +137,10 @@ for (let [key, value] of Object.entries(cachedProfiles)) {
 }
 
 // populate on Liaison starting (if it ever does)
-if ( python ) {
-    python.liaison.ready("app").then(
+if ( window.python ) {
+    window.python.liaison.ready("app").then(
         // set language before getting profiles
-        () => python.liaison.send("app", {
+        () => window.python.liaison.send("app", {
             command: "try",
             args: [
                 "psychopy.localization:setLocale",
